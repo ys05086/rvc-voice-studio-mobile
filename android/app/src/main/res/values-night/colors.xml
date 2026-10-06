@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bg">#1C1922</color>
+    <color name="panel">#26222E</color>
+    <color name="line">#3A3445</color>
+    <color name="text">#ECE7F3</color>
+    <color name="muted">#A79EB5</color>
+    <color name="accent">#B39BD2</color>
+    <color name="accent_strong">#CBB6E6</color>
+    <color name="lavender">#3A3150</color>
+    <color name="track">#332D3D</color>
+    <color name="fill">#8F78AE</color>
+    <color name="green">#8CC8AA</color>
+    <color name="mint">#23372E</color>
+    <color name="rec">#E07C93</color>
+    <color name="rec_soft">#45262F</color>
+</resources>

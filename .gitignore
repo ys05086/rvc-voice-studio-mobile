@@ -1,0 +1,25 @@
+# Built or downloaded
+android/.gradle/
+android/build/
+android/app/build/
+android/.cxx/
+android/app/.cxx/
+android/local.properties
+ios/build/
+ios/*.xcodeproj/
+.build/
+.swiftpm/
+Package.resolved
+converter/.venv/
+converter/downloads/
+converter/out/
+__pycache__/
+*.py[co]
+
+# Models, recordings and signing keys never go in the repository
+*.onnx
+*.pth
+*.pt
+*.wav
+*.jks
+keys/

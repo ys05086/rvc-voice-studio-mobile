@@ -1,0 +1,9 @@
+# rvc2phone.bat installs these into converter/.venv (PyTorch from its CPU-only index: no CUDA download).
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.11.0
+numpy==2.2.6
+transformers==4.57.3
+onnx
+onnxruntime==1.23.2
+# the Android GPU decoder (ncnn); without it the app decodes on the CPU
+pnnx==20260526

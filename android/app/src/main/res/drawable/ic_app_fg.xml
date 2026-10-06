@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- written by phone-vc/make_icon.py: the PC Voice Studio mark -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#72609E" android:pathData="M28.84,46.43a3.07,3.07 0 0 1 6.14,0v15.14a3.07,3.07 0 0 1 -6.14,0z M39.89,38.25a3.07,3.07 0 0 1 6.14,0v31.50a3.07,3.07 0 0 1 -6.14,0z M50.93,30.89a3.07,3.07 0 0 1 6.14,0v46.23a3.07,3.07 0 0 1 -6.14,0z M61.98,38.25a3.07,3.07 0 0 1 6.14,0v31.50a3.07,3.07 0 0 1 -6.14,0z M73.02,46.43a3.07,3.07 0 0 1 6.14,0v15.14a3.07,3.07 0 0 1 -6.14,0z" />
+</vector>

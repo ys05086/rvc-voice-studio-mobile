@@ -1,0 +1,51 @@
+# XcodeGen spec: `xcodegen generate` writes VoiceStudio.xcodeproj (not kept in git). CI builds it unsigned;
+# SideStore/AltStore sign the IPA on the phone with a free Apple ID.
+name: VoiceStudio
+options:
+  bundleIdPrefix: com.voicestudio
+  deploymentTarget:
+    iOS: "16.0"
+packages:
+  OnnxRuntime:
+    url: https://github.com/microsoft/onnxruntime-swift-package-manager
+    exactVersion: "1.24.2"
+targets:
+  VoiceStudio:
+    type: application
+    platform: iOS
+    sources:
+      - path: VoiceStudio
+    dependencies:
+      - package: OnnxRuntime
+        product: onnxruntime
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Voice Studio
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        NSMicrophoneUsageDescription: 목소리를 녹음해서 바꾸려고 마이크를 써요.
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        ITSAppUsesNonExemptEncryption: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.voicestudio.phone
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.0"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: NO
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+schemes:
+  VoiceStudio:
+    build:
+      targets:
+        VoiceStudio: all
+    run:
+      config: Debug
+    archive:
+      config: Release

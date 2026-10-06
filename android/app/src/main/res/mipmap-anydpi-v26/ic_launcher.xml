@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- the PC Voice Studio mark (make_icon.py) on its lavender; the launcher picks the mask shape -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/icon_bg" />
+    <foreground android:drawable="@drawable/ic_app_fg" />
+    <monochrome android:drawable="@drawable/ic_app_fg" />
+</adaptive-icon>

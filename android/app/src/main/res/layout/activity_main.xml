@@ -1,0 +1,496 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg"
+    android:fitsSystemWindows="true"
+    android:orientation="vertical">
+
+    <!-- brand and tabs, fixed at the top -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingStart="16dp"
+        android:paddingTop="12dp"
+        android:paddingEnd="16dp">
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+                <TextView
+                    android:id="@+id/brand"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textSize="22sp"
+                    android:textStyle="bold" />
+                <TextView style="@style/Hint" android:text="폰에서 녹음하고 바로 바꾸는 목소리" />
+            </LinearLayout>
+            <TextView
+                android:id="@+id/status"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="@drawable/chip"
+                android:paddingStart="10dp"
+                android:paddingTop="4dp"
+                android:paddingEnd="10dp"
+                android:paddingBottom="4dp"
+                android:textColor="@color/green"
+                android:textSize="12sp" />
+        </LinearLayout>
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/tabbar"
+            android:orientation="horizontal"
+            android:padding="4dp">
+            <TextView
+                android:id="@+id/tab_record"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:background="@drawable/tab"
+                android:gravity="center"
+                android:text="녹음"
+                android:textColor="@color/tab_text"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+            <TextView
+                android:id="@+id/tab_convert"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:background="@drawable/tab"
+                android:gravity="center"
+                android:text="변환"
+                android:textColor="@color/tab_text"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <ScrollView
+        android:id="@+id/scroll"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:paddingBottom="24dp">
+
+            <!-- ======== record page ======== -->
+            <LinearLayout
+                android:id="@+id/page_record"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+                <LinearLayout style="@style/Card">
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+                        <TextView
+                            android:id="@+id/rec_title"
+                            style="@style/CardTitle"
+                            android:layout_width="0dp"
+                            android:layout_weight="1"
+                            android:ellipsize="end"
+                            android:maxLines="1"
+                            android:text="새 녹음" />
+                        <TextView
+                            android:id="@+id/rec_time"
+                            style="@style/SliderValue"
+                            android:text="0:00.0" />
+                    </LinearLayout>
+                    <com.voicestudio.phone.WaveformView
+                        android:id="@+id/rec_wave"
+                        android:layout_width="match_parent"
+                        android:layout_height="150dp"
+                        android:layout_marginTop="10dp"
+                        android:background="@drawable/wave_bg" />
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="14dp"
+                        android:gravity="center"
+                        android:orientation="horizontal">
+                        <Button
+                            android:id="@+id/rec_rewind"
+                            style="@style/SoftButton"
+                            android:layout_width="56dp"
+                            android:layout_height="48dp"
+                            android:enabled="false"
+                            android:text="⏮" />
+                        <FrameLayout
+                            android:id="@+id/record"
+                            android:layout_width="76dp"
+                            android:layout_height="76dp"
+                            android:layout_marginStart="22dp"
+                            android:layout_marginEnd="22dp"
+                            android:background="@drawable/rec_outer"
+                            android:clickable="true"
+                            android:contentDescription="녹음"
+                            android:focusable="true">
+                            <View
+                                android:id="@+id/record_dot"
+                                android:layout_width="30dp"
+                                android:layout_height="30dp"
+                                android:layout_gravity="center"
+                                android:background="@drawable/rec_dot" />
+                        </FrameLayout>
+                        <Button
+                            android:id="@+id/rec_play"
+                            style="@style/SoftButton"
+                            android:layout_width="56dp"
+                            android:layout_height="48dp"
+                            android:enabled="false"
+                            android:text="▶" />
+                    </LinearLayout>
+                    <TextView
+                        android:id="@+id/rec_info"
+                        style="@style/Hint"
+                        android:layout_width="match_parent"
+                        android:layout_marginTop="12dp"
+                        android:gravity="center"
+                        android:text="빨간 버튼을 누르면 녹음을 시작해요" />
+                </LinearLayout>
+                <Button
+                    android:id="@+id/to_convert"
+                    android:layout_width="match_parent"
+                    android:layout_height="52dp"
+                    android:layout_marginTop="12dp"
+                    android:background="@drawable/btn_primary"
+                    android:enabled="false"
+                    android:stateListAnimator="@null"
+                    android:text="이 녹음 변환하기 →"
+                    android:textAllCaps="false"
+                    android:textColor="#FFFFFF"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
+                <LinearLayout style="@style/Card">
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="bottom"
+                        android:orientation="horizontal">
+                        <TextView style="@style/CardTitle" android:text="녹음 목록" />
+                        <TextView
+                            style="@style/Hint"
+                            android:layout_marginStart="10dp"
+                            android:text="눌러서 열기 · 길게 눌러 지우기" />
+                    </LinearLayout>
+                    <LinearLayout
+                        android:id="@+id/rec_list"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:orientation="vertical" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- ======== convert page ======== -->
+            <LinearLayout
+                android:id="@+id/page_convert"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone">
+                <LinearLayout style="@style/Card">
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+                        <TextView
+                            style="@style/CardTitle"
+                            android:layout_width="0dp"
+                            android:layout_weight="1"
+                            android:text="내 목소리 모델" />
+                        <Button
+                            android:id="@+id/import_model"
+                            style="@style/SoftButton"
+                            android:layout_width="wrap_content"
+                            android:layout_height="34dp"
+                            android:text="불러오기" />
+                    </LinearLayout>
+                    <Spinner
+                        android:id="@+id/model"
+                        android:layout_width="match_parent"
+                        android:layout_height="44dp"
+                        android:layout_marginTop="10dp"
+                        android:background="@drawable/spinner"
+                        android:popupBackground="@drawable/card" />
+                    <!-- the shared models, downloaded once (shown only while they are missing) -->
+                    <LinearLayout
+                        android:id="@+id/common_row"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal"
+                        android:visibility="gone">
+                        <TextView
+                            android:id="@+id/common_text"
+                            style="@style/Hint"
+                            android:layout_width="0dp"
+                            android:layout_weight="1" />
+                        <Button
+                            android:id="@+id/get_common"
+                            style="@style/SoftButton"
+                            android:layout_width="wrap_content"
+                            android:layout_height="34dp"
+                            android:text="받기" />
+                    </LinearLayout>
+                    <ProgressBar
+                        android:id="@+id/common_progress"
+                        style="@android:style/Widget.ProgressBar.Horizontal"
+                        android:layout_width="match_parent"
+                        android:layout_height="6dp"
+                        android:layout_marginTop="8dp"
+                        android:max="1000"
+                        android:progressDrawable="@drawable/meter"
+                        android:visibility="gone" />
+                </LinearLayout>
+
+                <LinearLayout style="@style/Card">
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="bottom"
+                        android:orientation="horizontal">
+                        <TextView style="@style/CardTitle" android:text="음높이 · 질감" />
+                        <TextView
+                            style="@style/Hint"
+                            android:layout_marginStart="10dp"
+                            android:text="모델마다 따로 저장" />
+                    </LinearLayout>
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:orientation="vertical">
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="음높이"
+                                android:textSize="13sp" />
+                            <TextView style="@style/Hint" android:text="내 목소리보다 높이거나 낮춰요 · 12반음 = 한 옥타브" />
+                        </LinearLayout>
+                        <TextView android:id="@+id/pitch_value" style="@style/SliderValue" />
+                    </LinearLayout>
+                    <SeekBar android:id="@+id/pitch" style="@style/Slider" android:max="48" />
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal">
+                        <TextView style="@style/Scale" android:text="−24 낮게" />
+                        <TextView style="@style/Scale" android:gravity="center" android:text="0 그대로" />
+                        <TextView style="@style/Scale" android:gravity="end" android:text="+24 높게" />
+                    </LinearLayout>
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+                        <TextView style="@style/SliderLabel" android:text="포먼트 · 목소리 질감" />
+                        <TextView android:id="@+id/formant_value" style="@style/SliderValue" />
+                    </LinearLayout>
+                    <SeekBar android:id="@+id/formant" style="@style/Slider" android:max="40" />
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal">
+                        <TextView style="@style/Scale" android:text="−2" />
+                        <TextView style="@style/Scale" android:gravity="end" android:text="+2" />
+                    </LinearLayout>
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:orientation="vertical">
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="음량 맞추기"
+                                android:textSize="13sp" />
+                            <TextView style="@style/Hint" android:text="작게 녹음해도 결과를 알맞은 크기로 키워요" />
+                        </LinearLayout>
+                        <Switch
+                            android:id="@+id/normalize"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:checked="true" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <!-- original -->
+                <LinearLayout style="@style/Card">
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+                        <TextView
+                            android:id="@+id/in_title"
+                            style="@style/CardTitle"
+                            android:layout_width="0dp"
+                            android:layout_weight="1"
+                            android:ellipsize="end"
+                            android:maxLines="1"
+                            android:text="원본" />
+                        <Button
+                            android:id="@+id/pick"
+                            style="@style/SoftButton"
+                            android:layout_width="wrap_content"
+                            android:layout_height="34dp"
+                            android:text="파일 고르기" />
+                    </LinearLayout>
+                    <com.voicestudio.phone.WaveformView
+                        android:id="@+id/in_wave"
+                        android:layout_width="match_parent"
+                        android:layout_height="84dp"
+                        android:layout_marginTop="10dp"
+                        android:background="@drawable/wave_bg" />
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+                        <Button
+                            android:id="@+id/in_play"
+                            style="@style/SoftButton"
+                            android:layout_width="52dp"
+                            android:layout_height="36dp"
+                            android:enabled="false"
+                            android:text="▶" />
+                        <TextView
+                            android:id="@+id/in_time"
+                            style="@style/SliderValue"
+                            android:layout_marginStart="10dp"
+                            android:textSize="12sp" />
+                        <TextView
+                            android:id="@+id/in_info"
+                            style="@style/Hint"
+                            android:layout_width="0dp"
+                            android:layout_marginStart="10dp"
+                            android:layout_weight="1"
+                            android:gravity="end"
+                            android:text="녹음 탭에서 보내거나 파일을 고르세요" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/convert"
+                    android:layout_width="match_parent"
+                    android:layout_height="52dp"
+                    android:layout_marginTop="12dp"
+                    android:background="@drawable/btn_primary"
+                    android:enabled="false"
+                    android:stateListAnimator="@null"
+                    android:text="변환하기"
+                    android:textAllCaps="false"
+                    android:textColor="#FFFFFF"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
+                <ProgressBar
+                    android:id="@+id/progress"
+                    style="@android:style/Widget.ProgressBar.Horizontal"
+                    android:layout_width="match_parent"
+                    android:layout_height="6dp"
+                    android:layout_marginTop="8dp"
+                    android:progressDrawable="@drawable/meter"
+                    android:visibility="gone" />
+
+                <!-- result -->
+                <LinearLayout
+                    android:id="@+id/result"
+                    style="@style/Card"
+                    android:visibility="gone">
+                    <TextView
+                        android:id="@+id/out_title"
+                        style="@style/CardTitle"
+                        android:ellipsize="end"
+                        android:maxLines="1"
+                        android:text="변환 결과" />
+                    <com.voicestudio.phone.WaveformView
+                        android:id="@+id/out_wave"
+                        android:layout_width="match_parent"
+                        android:layout_height="84dp"
+                        android:layout_marginTop="10dp"
+                        android:background="@drawable/wave_bg" />
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+                        <Button
+                            android:id="@+id/out_play"
+                            style="@style/SoftButton"
+                            android:layout_width="52dp"
+                            android:layout_height="36dp"
+                            android:text="▶" />
+                        <TextView
+                            android:id="@+id/out_time"
+                            style="@style/SliderValue"
+                            android:layout_marginStart="10dp"
+                            android:textSize="12sp" />
+                        <View
+                            android:layout_width="0dp"
+                            android:layout_height="1dp"
+                            android:layout_weight="1" />
+                        <Button
+                            android:id="@+id/save"
+                            style="@style/SoftButton"
+                            android:layout_width="wrap_content"
+                            android:layout_height="36dp"
+                            android:text="저장" />
+                        <Button
+                            android:id="@+id/share"
+                            style="@style/SoftButton"
+                            android:layout_width="wrap_content"
+                            android:layout_height="36dp"
+                            android:layout_marginStart="8dp"
+                            android:text="공유" />
+                    </LinearLayout>
+                    <TextView
+                        android:id="@+id/out_info"
+                        style="@style/Hint"
+                        android:layout_marginTop="6dp" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/help"
+                    style="@style/Hint"
+                    android:layout_width="match_parent"
+                    android:layout_marginTop="14dp"
+                    android:lineSpacingExtra="2dp" />
+            </LinearLayout>
+        </FrameLayout>
+    </ScrollView>
+</LinearLayout>
