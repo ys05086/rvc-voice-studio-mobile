@@ -59,6 +59,9 @@ class MainActivity : Activity() {
     private val modelsDir by lazy { File(base, "models") }
     private val recordingsDir by lazy { File(base, "recordings") }
     private val prefs by lazy { getSharedPreferences("phone", MODE_PRIVATE) }
+    /** The test hooks' extras (`adb shell am start ... --es convert ...`): only when files/debug_hooks exists, since
+     *  the launcher activity takes intents from any app. Otherwise an empty intent, so every hook reads its default. */
+    private val hooks: Intent by lazy { if (File(base, "debug_hooks").isFile) intent else Intent() }
 
     private val views = HashMap<Int, View>()
     @Suppress("UNCHECKED_CAST")
@@ -80,6 +83,8 @@ class MainActivity : Activity() {
     private var ep = "qnn_htp"  // test hook override (--es ep); the app follows the NPU switch
     private var decFile = "model.dec.onnx"
     private var busy = false
+    /** The shared models and at least one voice are there. */
+    private var ready = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -90,21 +95,29 @@ class MainActivity : Activity() {
         f<TextView>(R.id.brand).text = SpannableStringBuilder("voice / studio").apply {
             setSpan(ForegroundColorSpan(getColor(R.color.accent)), 5, 8, 0)
         }
-        f<View>(R.id.tab_record).setOnClickListener { showPage(record = true) }
-        f<View>(R.id.tab_convert).setOnClickListener { showPage(record = false) }
+        f<View>(R.id.tab_record).setOnClickListener { showPage(RECORD) }
+        f<View>(R.id.tab_convert).setOnClickListener { showPage(CONVERT) }
+        f<View>(R.id.tab_live).setOnClickListener { showPage(LIVE) }
+        f<View>(R.id.gear).setOnClickListener { showPage(if (page == SETTINGS) lastPage else SETTINGS) }
+        f<Button>(R.id.settings_close).setOnClickListener { showPage(lastPage) }
         setupRecordPage()
         setupConvertPage()
+        setupLivePage()
+        setupSettingsPage()
         f<Button>(R.id.get_common).setOnClickListener { toggleCommonDownload() }
         player.onStateChange = { wave, playing -> playButtonFor(wave)?.text = if (playing) "⏸" else "▶" }
-        showPage(record = prefs.getBoolean("record_page", true))
+        showPage(prefs.getString("page", null) ?: if (prefs.getBoolean("record_page", true)) RECORD else CONVERT)
         refreshModels()
         refreshRecordings()
-        decFile = intent.getStringExtra("dec") ?: decFile
-        intent.getStringExtra("convert")?.let { debugConvert(File(it)) }
-        intent.getStringExtra("bench")?.let { path ->  // test hook: --es bench <dec.onnx> --es ep cpu|qnn_htp|qnn_gpu
+        if (!ready) showPage(SETTINGS)  // first run: models come first
+        decFile = hooks.getStringExtra("dec") ?: decFile
+        hooks.getStringExtra("convert")?.let { debugConvert(File(it)) }
+        hooks.getStringExtra("stream")?.let { debugStream(File(it)) }
+        if (hooks.getBooleanExtra("dspbench", false)) thread { StreamBench.dsp { android.util.Log.i("VoiceStudio", it) } }
+        hooks.getStringExtra("bench")?.let { path ->  // test hook: --es bench <dec.onnx> --es ep cpu|qnn_htp|qnn_gpu
             thread {
                 val msg = try {
-                    val (first, rest) = Rvc.benchDecoder(path, intent.getStringExtra("ep") ?: ep, intent.getIntExtra("threads", 4))
+                    val (first, rest) = Rvc.benchDecoder(path, hooks.getStringExtra("ep") ?: ep, hooks.getIntExtra("threads", 4))
                     String.format(Locale.US, "bench %s on %s: first run %.2f s, then %.3f s per run", File(path).name, ep, first, rest)
                 } catch (e: Throwable) { "bench failed on $ep: ${e.message}" }
                 android.util.Log.i("VoiceStudio", msg)
@@ -115,6 +128,8 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         if (!busy) refreshModels()
+        if (recorder == null) refreshRecordings()  // realtime recordings may have been saved from the notification
+        if (LiveSession.engine != null) { ui.removeCallbacks(liveTicker); ui.post(liveTicker) }  // back from the notification
     }
 
     override fun onPause() {
@@ -125,22 +140,33 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         player.stop()
         engine?.close()
+        ui.removeCallbacks(liveTicker)
+        if (!LiveSession.running) LiveSession.release()  // a running session goes on (its notification stops it)
         super.onDestroy()
     }
 
-    private fun showPage(record: Boolean) {
+    private var page = RECORD
+    /** The tab 설정 returns to. */
+    private var lastPage = RECORD
+
+    private fun showPage(which: String) {
         // the newest take follows to 변환 by itself, unless a file was picked there since
         val t = take
-        if (!record && t != null && t !== input && (input == null || inputTake != null) && recorder == null) {
+        if (which == CONVERT && t != null && t !== input && (input == null || inputTake != null) && recorder == null) {
             setInput(t, takeName)
             inputTake = t
         }
-        f<View>(R.id.page_record).visibility = if (record) View.VISIBLE else View.GONE
-        f<View>(R.id.page_convert).visibility = if (record) View.GONE else View.VISIBLE
-        f<View>(R.id.tab_record).isSelected = record
-        f<View>(R.id.tab_convert).isSelected = !record
-        prefs.edit().putBoolean("record_page", record).apply()
+        page = which
+        if (which != SETTINGS) lastPage = which
+        for ((name, pageId, tabId) in listOf(Triple(RECORD, R.id.page_record, R.id.tab_record),
+                Triple(CONVERT, R.id.page_convert, R.id.tab_convert), Triple(LIVE, R.id.page_live, R.id.tab_live))) {
+            f<View>(pageId).visibility = if (name == which) View.VISIBLE else View.GONE
+            f<View>(tabId).isSelected = name == which
+        }
+        f<View>(R.id.page_settings).visibility = if (which == SETTINGS) View.VISIBLE else View.GONE
+        if (which != SETTINGS) prefs.edit().putString("page", which).apply() else showCompute()
         f<ScrollView>(R.id.scroll).scrollTo(0, 0)
+        if (which == LIVE) { loadLiveSliders(); showLive() }
     }
 
     private fun playButtonFor(wave: WaveformView?): Button? = when (wave?.id) {
@@ -163,7 +189,7 @@ class MainActivity : Activity() {
         }
         wave.onSeek = { showRecTime() }
         wave.onSeekDone = { at -> if (player.isPlaying(wave)) take?.let { player.play(wave, it, at) }; showRecTime() }
-        f<Button>(R.id.to_convert).setOnClickListener { showPage(record = false) }
+        f<Button>(R.id.to_convert).setOnClickListener { showPage(CONVERT) }
         ticker()
     }
 
@@ -186,6 +212,7 @@ class MainActivity : Activity() {
 
     private fun toggleRecording() {
         val r = recorder
+        if (r == null && LiveSession.running) { toast("실시간 변환을 끄고 녹음하세요"); return }
         if (r == null) {
             if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
                 requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), MIC)
@@ -382,38 +409,6 @@ class MainActivity : Activity() {
             })
             advSliders[spec.key] = bar
         }
-        // compute devices: phone settings, not voice ones
-        val gpuRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(14), 0, 0) }
-        gpuRow.addView(LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-            addView(TextView(this@MainActivity).apply { text = "GPU로 변환 (디코더) · 폰 전체 설정"; textSize = 13f })
-            addView(TextView(this@MainActivity).apply { text = "소리를 만드는 디코더를 GPU 32비트로 돌려요. 2배쯤 빠르고 소리는 CPU와 같아요. 모델 폴더에 .dec.ncnn 파일이 있어야 해요"; textSize = 11f; setTextColor(getColor(R.color.muted)) })
-        })
-        val gpu = Switch(this).apply { isChecked = prefs.getBoolean("gpu_dec", true) }
-        gpu.setOnCheckedChangeListener { _, on -> prefs.edit().putBoolean("gpu_dec", on).apply() }
-        gpuRow.addView(gpu)
-        body.addView(gpuRow)
-        val npuRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(14), 0, 0) }
-        npuRow.addView(LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-            addView(TextView(this@MainActivity).apply { text = "NPU로 변환 (앞 단계) · 폰 전체 설정"; textSize = 13f })
-            addView(TextView(this@MainActivity).apply { text = "HuBERT·음높이·enc를 NPU로 돌려요. 소리를 만드는 디코더는 32비트 그대로예요. 처음 한 번은 준비가 오래 걸려요"; textSize = 11f; setTextColor(getColor(R.color.muted)) })
-        })
-        val npu = Switch(this).apply { isChecked = prefs.getBoolean("npu_front", false) }
-        npu.setOnCheckedChangeListener { _, on -> prefs.edit().putBoolean("npu_front", on).apply() }
-        npuRow.addView(npu)
-        body.addView(npuRow)
-        // CPU threads: a phone setting, not a voice one
-        val threadsValue = TextView(this).apply { textSize = 13f; typeface = Typeface.MONOSPACE; setTextColor(getColor(R.color.accent_strong)) }
-        val threadsBar = sliderRow(body, "변환 스레드 · 폰 전체 설정", threadsValue, "2", "8", 6)
-        threadsBar.setOnSeekBarChangeListener(slider { p, done ->
-            threadsValue.text = "${p + 2}"
-            if (done) prefs.edit().putInt("threads", p + 2).apply()
-        })
-        threadsBar.progress = intent.getIntExtra("threads", prefs.getInt("threads", 4)) - 2
-        threadsValue.text = "${threadsBar.progress + 2}"
         body.addView(TextView(this).apply {
             text = "\"1 = 꺼짐\"인 항목은 1에서 멀어질수록 강해져요. 바꾼 값은 지금 고른 모델에 바로 저장돼요."
             textSize = 11f; setTextColor(getColor(R.color.muted)); setPadding(0, dp(10), 0, 0)
@@ -455,6 +450,7 @@ class MainActivity : Activity() {
         if (loadingSliders) return
         val dir = currentModel() ?: return
         File(dir, "settings.json").writeText(settingsJson(dir).put(key, value).toString(1))
+        LiveSession.engine?.update(settingsOf(dir))  // realtime follows from its next step
     }
 
     /** Sliders and switches from the selected model's settings.json. */
@@ -462,6 +458,7 @@ class MainActivity : Activity() {
         val dir = currentModel() ?: return
         val j = settingsJson(dir)
         fun num(k: String, d: Double) = if (j.has(k)) j.optDouble(k, d) else d
+        f<TextView>(R.id.voice_hint).text = "${dir.name}에 저장"
         loadingSliders = true
         f<SeekBar>(R.id.pitch).progress = (num("pitch", 0.0) + 24).roundToInt()
         f<SeekBar>(R.id.formant).progress = ((num("formant", 0.0) + 2) * 10).roundToInt()
@@ -487,22 +484,26 @@ class MainActivity : Activity() {
 
     private fun refreshModels() {
         commonDir.mkdirs(); modelsDir.mkdirs()
+        if (!busy && !LiveSession.running) sortLooseFiles().takeIf { it.isNotEmpty() }?.let { toast("넣었어요: " + it.joinToString(", ")) }
         val commonOk = File(commonDir, "hubert.onnx").isFile && File(commonDir, "rmvpe.onnx").isFile
         models = modelsDir.listFiles { file -> file.isDirectory && File(file, "model.enc.onnx").isFile && File(file, "model.dec.onnx").isFile }
             ?.sortedBy { it.name.lowercase() } ?: emptyList()
         val spinner = f<Spinner>(R.id.model)
-        val keep = prefs.getString("model", null)
+        val keep = hooks.getStringExtra("model") ?: prefs.getString("model", null)  // test hook: --es model NAME
         spinner.adapter = ArrayAdapter(this, R.layout.spinner_item, models.map { it.name }).apply { setDropDownViewResource(R.layout.spinner_item) }
         models.indexOfFirst { it.name == keep }.takeIf { it >= 0 }?.let { spinner.setSelection(it) }
-        val ready = commonOk && models.isNotEmpty()
+        ready = commonOk && models.isNotEmpty()
         val status = f<TextView>(R.id.status)
         status.text = if (ready) "준비됨" else "모델 필요"
         status.setBackgroundResource(if (ready) R.drawable.chip else R.drawable.chip_warn)
         status.setTextColor(getColor(if (ready) R.color.green else R.color.rec))
-        f<View>(R.id.common_row).visibility = if (commonOk && !downloading) View.GONE else View.VISIBLE
-        f<TextView>(R.id.common_text).text = String.format(Locale.US, "공통 모델 hubert·rmvpe (처음 한 번 %.0f MB, 와이파이 추천)",
-            CommonModels.totalBytes / 1e6)
-        f<TextView>(R.id.help).text = if (ready) "모델 폴더: ${base.path}" else buildString {
+        // also offered when only the NPU's HuBERT is missing (realtime is ~90 ms a step faster with it)
+        val missing = CommonModels.items.filter { !File(commonDir, it.name).isFile }
+        f<View>(R.id.common_row).visibility = if (missing.isEmpty() && !downloading) View.GONE else View.VISIBLE
+        f<TextView>(R.id.common_text).text = if (commonOk) String.format(Locale.US,
+            "NPU용 HuBERT (실시간이 빨라져요, %.0f MB, 와이파이 추천)", missing.sumOf { it.bytes } / 1e6)
+            else String.format(Locale.US, "공통 모델 hubert·rmvpe (처음 한 번 %.0f MB, 와이파이 추천)", missing.sumOf { it.bytes } / 1e6)
+        f<TextView>(R.id.help).text = if (ready) "다른 목소리는 \"불러오기\"로 변환 도구가 만든 폴더나 zip을 고르세요" else buildString {
             append("\"불러오기\"로 모델 폴더나 zip 파일을 고르세요.\n")
             if (!commonOk) append("· 공통 모델 hubert.onnx, rmvpe.onnx가 필요해요 (처음 한 번, 위의 \"받기\")\n")
             if (models.isEmpty()) append("· 목소리 모델: <이름>.enc.onnx, <이름>.dec.onnx, settings.json\n")
@@ -559,7 +560,7 @@ class MainActivity : Activity() {
     }
 
     private fun updateConvertButton() {
-        f<Button>(R.id.convert).isEnabled = input != null && models.isNotEmpty() && !busy
+        f<Button>(R.id.convert).isEnabled = input != null && models.isNotEmpty() && !busy && !LiveSession.running
     }
 
     private fun setInput(x: FloatArray, name: String) {
@@ -581,10 +582,12 @@ class MainActivity : Activity() {
         val dir = currentModel() ?: return
         val settings = settingsOf(dir)
         val normalize = f<Switch>(R.id.normalize).isChecked
-        val threads = intent.getIntExtra("threads", prefs.getInt("threads", 4))
-        // the decoder stays 32-bit (fp16 on the NPU roughens the waveform); the feature models may use the NPU
-        val ep = intent.getStringExtra("ep") ?: if (prefs.getBoolean("gpu_dec", true)) "ncnn_gpu" else "cpu"
-        val front = intent.getStringExtra("front") ?: if (prefs.getBoolean("npu_front", false)) "qnn_htp" else "cpu"
+        val threads = hooks.getIntExtra("threads", prefs.getInt("threads", 4))
+        val devices = fileDevices(dir)
+        val hooked = hooks.getStringExtra("ep") != null || hooks.getStringExtra("front") != null
+        val ep = hooks.getStringExtra("ep") ?: devices.ep
+        val front = hooks.getStringExtra("front") ?: devices.front
+        val dec = if (hooked || decFile != "model.dec.onnx") decFile else devices.file
         val convert = f<Button>(R.id.convert)
         val progress = f<ProgressBar>(R.id.progress)
         player.stop()
@@ -597,15 +600,18 @@ class MainActivity : Activity() {
         thread {
             try {
                 val started = System.currentTimeMillis()
-                val key = "${dir.path}|$threads|$ep|$decFile|$front|${intent.getIntExtra("chunk_s", 3)}"
+                val seed = hooks.getIntExtra("seed", 0)  // test hook: --ei seed N (another draw of the synthesizer's noise)
+                val fixedWindows = hooks.getBooleanExtra("fixed_windows", false)  // test hook: the NPU's windows on the CPU
+                val key = "${dir.path}|$threads|$ep|$dec|$front|${hooks.getIntExtra("chunk_s", 3)}|$seed|$fixedWindows"
                 if (engineKey != key) {
-                    val firstNpu = (ep.startsWith("qnn") && !File(dir, "model.dec.$ep.onnx").isFile) ||
-                        (front.startsWith("qnn") && commonDir.listFiles { f -> f.name.startsWith("hubert.$front.") }.isNullOrEmpty())
+                    val firstNpu = (ep.startsWith("qnn") && !File(dir, dec.removeSuffix(".onnx") + ".$ep.onnx").isFile) ||
+                        (front.startsWith("qnn") && commonDir.listFiles { f -> f.name.startsWith("hubert.") && f.name.contains(".$front.") }.isNullOrEmpty())
                     ui.post { convert.text = if (firstNpu) "NPU 준비 중… (처음 한 번은 오래 걸려요)" else "모델 불러오는 중…" }
                     engine?.close()
                     engine = null
-                    val chunk = intent.getIntExtra("chunk_s", 3) * Rvc.SR16  // test hook: --ei chunk_s N
-                    engine = Rvc(commonDir, dir, threads, ep, decFile, front, chunk)
+                    LiveSession.release()
+                    val chunk = hooks.getIntExtra("chunk_s", 3) * Rvc.SR16  // test hook: --ei chunk_s N
+                    engine = Rvc(commonDir, dir, threads, ep, dec, front, chunk, seed = seed.toLong(), cpuFixedWindows = fixedWindows)
                     engineKey = key
                 }
                 val loaded = System.currentTimeMillis()
@@ -617,6 +623,7 @@ class MainActivity : Activity() {
                 done?.invoke(y, load, took)
                 ui.post { showResult(y, dir.name, x.size, took, load) }
             } catch (e: Throwable) {
+                android.util.Log.e("VoiceStudio", "conversion failed", e)
                 ui.post { toast("변환 실패: ${e.message}") }
             } finally {
                 ui.post { busy = false; convert.text = "변환하기"; progress.visibility = View.GONE; updateConvertButton() }
@@ -672,9 +679,10 @@ class MainActivity : Activity() {
     private fun importTarget(name: String, model: File?): File? {
         val n = name.lowercase()
         return when {
-            n == "hubert.onnx" || n == "rmvpe.onnx" -> File(commonDir, n)
+            n == "hubert.onnx" || n == "rmvpe.onnx" || n == "hubert.htp.onnx" -> File(commonDir, n)
             model == null -> null
             n.endsWith(".enc.onnx") -> File(model, "model.enc.onnx")
+            n.endsWith(".dec.w8a16.onnx") -> File(model, W8A16)  // the NPU's integer decoder (converter, calib/)
             n.endsWith(".dec.onnx") -> File(model, "model.dec.onnx")
             n.endsWith(".dec.ncnn.param") -> File(model, "model.dec.ncnn.param")
             n.endsWith(".dec.ncnn.bin") -> File(model, "model.dec.ncnn.bin")
@@ -686,6 +694,40 @@ class MainActivity : Activity() {
     }
 
     private class Source(val name: String, val open: () -> InputStream)
+
+    /** Model files put loose into the app folder (adb push, the PC converter's 폰으로 보내기): <voice>.dec.w8a16.onnx and
+     *  the other parts move into models/<voice>/ (a new voice when its enc and dec came together; its <voice>.settings.json
+     *  seeds the new folder only), hubert.htp.onnx and the other shared ones into common/,
+     *  as the iPhone app sorts what lands in its Documents. adb can write the app folder but not the voice folders
+     *  the app made. A replaced part takes the NPU's compiled copies with it. Returns what moved, for a message. */
+    private fun sortLooseFiles(): List<String> {
+        val moved = ArrayList<String>()
+        val voices = (modelsDir.listFiles { f -> f.isDirectory }?.associateBy { it.name.lowercase() } ?: emptyMap()).toMutableMap()
+        val loose = base.listFiles { f -> f.isFile && (f.name.endsWith(".onnx") || ".ncnn." in f.name || f.name.endsWith(".settings.json")) }
+            ?: return moved
+        // a voice the phone does not have yet: both of its main parts arrived
+        val names = loose.map { it.name }.toSet()
+        for (f in loose) {
+            val voice = f.name.substringBefore('.')  // as the parts are matched below (no dots in loose voice names)
+            if (f.name == "$voice.enc.onnx" && "$voice.dec.onnx" in names && voice.lowercase() !in voices && voice.isNotBlank())
+                voices[voice.lowercase()] = File(modelsDir, voice).apply { mkdirs() }
+        }
+        for (file in loose) {
+            val shared = file.name.lowercase() in setOf("hubert.onnx", "rmvpe.onnx", "hubert.htp.onnx")
+            val dir = if (shared) commonDir else voices[file.name.substringBefore('.').lowercase()] ?: continue
+            val target = importTarget(file.name, dir) ?: continue
+            if (target.name == "settings.json" && target.isFile) { file.delete(); continue }  // never over a voice's tuned settings
+            val stem = target.name.removeSuffix(".onnx")
+            dir.listFiles { f -> f.name.startsWith("$stem.") && ".qnn_" in f.name }?.forEach { it.delete() }
+            target.delete()
+            if (!file.renameTo(target)) {
+                runCatching { file.copyTo(target, overwrite = true); file.delete() }.onFailure { continue }
+            }
+            moved += if (shared) target.name else "${dir.name} ← ${file.name.substringAfter('.')}"
+        }
+        if (moved.isNotEmpty()) { engine?.close(); engine = null; engineKey = ""; LiveSession.release() }
+        return moved
+    }
 
     private fun importFolder(tree: Uri) {
         val treeId = DocumentsContract.getTreeDocumentId(tree)
@@ -753,7 +795,9 @@ class MainActivity : Activity() {
             try {
                 model?.mkdirs()
                 // a new decoder makes the NPU's compiled copy stale
-                model?.listFiles { file -> file.name.startsWith("model.dec.qnn") || file.name.startsWith("model.dec.ncnn") || file.name.startsWith("model.enc.qnn") }?.forEach { it.delete() }
+                // (the GPU decoder's files only when new ones come: importing just the NPU decoder keeps them)
+                val newNcnn = sources.any { it.name.lowercase().contains(".dec.ncnn.") }
+                model?.listFiles { file -> ".qnn_" in file.name || (newNcnn && file.name.startsWith("model.dec.ncnn")) }?.forEach { it.delete() }
                 val todo = sources.mapNotNull { s -> importTarget(s.name, model)?.let { s to it } }
                 for ((i, pair) in todo.withIndex()) {
                     val (source, target) = pair
@@ -777,11 +821,446 @@ class MainActivity : Activity() {
         }
     }
 
+    // ---------------------------------------------------------------- settings
+
+    /** Where file conversion runs, from 설정 › 계산 장치: the front ("cpu" / "qnn_htp"), the decoder's runtime and its
+     *  file, and how to say it. 추천 = the NPU throughout, with the integer decoder when the voice has it (it sounds
+     *  like 32-bit; the 16-bit float one does not), else the GPU in 32 bits. */
+    private class Devices(val front: String, val ep: String, val file: String, val label: String)
+
+    private fun fileDevices(dir: File): Devices {
+        val hasInt = File(dir, W8A16).isFile
+        val (front, dec) = when (prefs.getString("compute", "recommended")) {
+            "full32" -> "cpu" to "gpu"
+            "custom" -> prefs.getString("custom_front", "npu")!! to prefs.getString("custom_dec", "npu_int")!!
+            else -> "npu" to if (hasInt) "npu_int" else "gpu"
+        }
+        val f = if (front == "npu") "qnn_htp" else "cpu"
+        val frontLabel = "앞 단계 " + if (front == "npu") "NPU" else "CPU"
+        return when {
+            dec == "npu_int" && hasInt -> Devices(f, "qnn_htp", W8A16, "$frontLabel · 디코더 NPU 정수 (8·16비트)")
+            dec == "npu16" -> Devices(f, "qnn_htp", "model.dec.onnx", "$frontLabel · 디코더 NPU 16비트 (거칠 수 있어요)")
+            dec == "cpu" -> Devices(f, "cpu", "model.dec.onnx", "$frontLabel · 디코더 CPU 32비트")
+            else -> Devices(f, "ncnn_gpu", "model.dec.onnx", "$frontLabel · 디코더 GPU 32비트" +
+                if (dec == "npu_int") " (이 목소리엔 NPU 정수 디코더 파일이 없어요)" else "")
+        }
+    }
+
+    private val computeViews = HashMap<String, View>()
+
+    /** A row of choices that looks like the page tabs. */
+    private fun segmented(parent: LinearLayout, items: List<Pair<String, String>>, selected: () -> String, pick: (String) -> Unit): List<TextView> {
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundResource(R.drawable.tabbar)
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42)).apply { topMargin = dp(10) }
+        }
+        val views = items.map { (key, label) ->
+            TextView(this).apply {
+                text = label; textSize = 13f; gravity = Gravity.CENTER; setTypeface(typeface, Typeface.BOLD)
+                setTextColor(getColorStateList(R.color.tab_text)); setBackgroundResource(R.drawable.tab)
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
+                tag = key
+                setOnClickListener { pick(key); showCompute() }
+            }.also { bar.addView(it) }
+        }
+        parent.addView(bar)
+        computeViews["seg_" + items.joinToString { it.first }] = bar
+        return views.onEach { v -> v.isSelected = v.tag == selected() }
+    }
+
+    private val segments = ArrayList<Pair<List<TextView>, () -> String>>()
+
+    private fun setupSettingsPage() {
+        val page = f<LinearLayout>(R.id.page_settings)
+        // where the models run
+        val compute = card(page)
+        compute.addView(TextView(this).apply { text = "계산 장치 · 폰 전체 설정"; textSize = 13f; setTypeface(typeface, Typeface.BOLD) })
+        val presets = listOf("recommended" to "추천", "full32" to "전부 32비트", "custom" to "직접 고르기")
+        val preset = { prefs.getString("compute", "recommended")!! }
+        segments += segmented(compute, presets, preset) { prefs.edit().putString("compute", it).apply() } to preset
+        val hint = TextView(this).apply { textSize = 11f; setTextColor(getColor(R.color.muted)); setPadding(0, dp(8), 0, 0) }
+        compute.addView(hint)
+        computeViews["hint"] = hint
+        val custom = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        compute.addView(custom)
+        computeViews["custom"] = custom
+        custom.addView(TextView(this).apply { text = "앞 단계 (HuBERT · 음높이 · enc)"; textSize = 12f; setPadding(0, dp(10), 0, 0) })
+        val front = { prefs.getString("custom_front", "npu")!! }
+        segments += segmented(custom, listOf("cpu" to "CPU", "npu" to "NPU"), front) { prefs.edit().putString("custom_front", it).apply() } to front
+        custom.addView(TextView(this).apply { text = "디코더 (소리를 만드는 단계)"; textSize = 12f; setPadding(0, dp(10), 0, 0) })
+        val dec = { prefs.getString("custom_dec", "npu_int")!! }
+        segments += segmented(custom, listOf("cpu" to "CPU", "gpu" to "GPU", "npu_int" to "NPU 정수", "npu16" to "NPU 16비트"), dec) {
+            prefs.edit().putString("custom_dec", it).apply()
+        } to dec
+        val now = TextView(this).apply { textSize = 12f; setTextColor(getColor(R.color.accent_strong)); setPadding(0, dp(10), 0, 0) }
+        compute.addView(now)
+        computeViews["now"] = now
+        val threadsValue = valueText()
+        val threadsBar = sliderRow(compute, "CPU 스레드", threadsValue, "2", "8", 6)
+        threadsBar.setOnSeekBarChangeListener(slider { p, done ->
+            threadsValue.text = "${p + 2}"
+            if (done) prefs.edit().putInt("threads", p + 2).apply()
+        })
+        threadsBar.progress = hooks.getIntExtra("threads", prefs.getInt("threads", 4)) - 2
+        threadsValue.text = "${threadsBar.progress + 2}"
+        compute.addView(TextView(this).apply {
+            text = "실시간은 속도 때문에 늘 NPU로 돌아요 (정수 디코더가 있으면 그걸로). 바꾼 설정은 다음 변환부터 적용돼요."
+            textSize = 11f; setTextColor(getColor(R.color.muted)); setPadding(0, dp(10), 0, 0)
+        })
+        // records
+        val records = card(page)
+        records.addView(TextView(this).apply { text = "기록"; textSize = 13f; setTypeface(typeface, Typeface.BOLD) })
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(8), 0, 0) }
+        row.addView(TextView(this).apply {
+            text = "실시간 진단 기록과 마지막 실시간 녹음을 다운로드/VoiceStudio에 넣어요 (PC로 옮겨서 볼 수 있게)"
+            textSize = 11f; setTextColor(getColor(R.color.muted))
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        row.addView(Button(this, null, 0, R.style.SoftButton).apply {
+            text = "기록 보내기"
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36)).apply { marginStart = dp(10) }
+            setOnClickListener { exportLive() }
+        })
+        records.addView(row)
+        val version = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull() ?: "?"
+        records.addView(TextView(this).apply {
+            text = "앱 폴더: ${base.path}\n버전 $version"
+            textSize = 11f; setTextColor(getColor(R.color.muted)); setPadding(0, dp(8), 0, 0)
+        })
+    }
+
+    /** The compute card's state: which choice is lit, its hint, and what the selected voice will actually run on. */
+    private fun showCompute() {
+        for ((views, selected) in segments) views.forEach { it.isSelected = it.tag == selected() }
+        val preset = prefs.getString("compute", "recommended")
+        (computeViews["hint"] as? TextView)?.text = when (preset) {
+            "full32" -> "앞 단계는 CPU, 디코더는 GPU, 전부 32비트. 느리지만 기준이 되는 소리예요 (15초에 13초쯤)"
+            "custom" -> "앞 단계와 디코더를 따로 골라요. NPU 16비트 디코더는 비교용이에요 (잡음이 끼어요)"
+            else -> "가장 빠르면서 32비트와 같은 소리: 전부 NPU, 디코더는 정수(8·16비트). 정수 디코더가 없는 목소리는 GPU 32비트로 (15초에 7초쯤)"
+        }
+        computeViews["custom"]?.visibility = if (preset == "custom") View.VISIBLE else View.GONE
+        (computeViews["now"] as? TextView)?.text = currentModel()?.let { "지금 목소리 ${it.name}: ${fileDevices(it).label}" } ?: ""
+    }
+
+    // ---------------------------------------------------------------- live page
+
+    @Volatile private var livePreparing = false
+    @Volatile private var liveMessage: String? = null
+    private var lastLive: LiveEngine.Stats? = null
+    private val liveBars = HashMap<String, SeekBar>()
+    private val liveTicker = object : Runnable {
+        override fun run() {
+            showLive()
+            if (LiveSession.engine != null || livePreparing) ui.postDelayed(this, 100)
+        }
+    }
+
+    /** Realtime settings, phone-wide; block, crossfade, cushion and threshold apply at the next start. */
+    private fun liveParams() = LiveParams(block = prefs.getInt("live_block", 25), context = 100,
+        crossfade = prefs.getInt("live_crossfade", 8), search = 1, cushion = prefs.getInt("live_cushion_cs", 6) / 100.0,
+        thresholdDb = prefs.getInt("live_threshold_db", -60).toDouble(), gainDb = prefs.getInt("live_gain_db", 12).toDouble())
+
+    private fun card(parent: LinearLayout) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setBackgroundResource(R.drawable.card)
+        setPadding(dp(16), dp(14), dp(16), dp(14))
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) }
+        parent.addView(this)
+    }
+
+    private fun valueText() = TextView(this).apply { textSize = 13f; typeface = Typeface.MONOSPACE; setTextColor(getColor(R.color.accent_strong)) }
+
+    private fun switchRow(parent: LinearLayout, label: String, hint: String, key: String) {
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(12), 0, 0) }
+        row.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            addView(TextView(this@MainActivity).apply { text = label; textSize = 13f })
+            addView(TextView(this@MainActivity).apply { text = hint; textSize = 11f; setTextColor(getColor(R.color.muted)) })
+        })
+        row.addView(Switch(this).apply {
+            isChecked = prefs.getBoolean(key, false)
+            setOnCheckedChangeListener { _, on -> prefs.edit().putBoolean(key, on).apply(); showLive() }
+        })
+        parent.addView(row)
+    }
+
+    private fun setupLivePage() {
+        f<Button>(R.id.live_toggle).setOnClickListener { toggleLive() }
+        f<Button>(R.id.live_rec).setOnClickListener { toggleLiveRecording() }
+        val page = f<LinearLayout>(R.id.page_live)
+        // the voice: output level (phone-wide), pitch and texture (the voice's own settings, shared with 변환)
+        val voice = card(page)
+        voice.addView(TextView(this).apply { text = "목소리 · 바로 바뀌어요"; textSize = 13f; setTypeface(typeface, Typeface.BOLD) })
+        val gainValue = valueText()
+        val gain = sliderRow(voice, "출력 크기", gainValue, "−12 dB", "+24 dB", 36)
+        gain.setOnSeekBarChangeListener(slider { p, done ->
+            gainValue.text = String.format(Locale.US, "%+d dB", p - 12)
+            LiveSession.engine?.setGain((p - 12).toDouble())
+            if (done) prefs.edit().putInt("live_gain_db", p - 12).apply()
+        })
+        gain.progress = prefs.getInt("live_gain_db", 12) + 12
+        val pitchValue = valueText()
+        val pitch = sliderRow(voice, "음높이 · 내 목소리보다", pitchValue, "−24", "+24", 48)
+        pitch.setOnSeekBarChangeListener(slider { p, done ->
+            pitchValue.text = if (p == 24) "0 반음" else String.format(Locale.US, "%+d 반음", p - 24)
+            if (done) { saveSetting("pitch", (p - 24).toDouble()); loadSliders() }
+        })
+        liveBars["pitch"] = pitch
+        val formantValue = valueText()
+        val formant = sliderRow(voice, "포먼트 · 목소리 질감", formantValue, "−2", "+2", 40)
+        formant.setOnSeekBarChangeListener(slider { p, done ->
+            formantValue.text = String.format(Locale.US, "%.1f", (p - 20) / 10.0)
+            if (done) { saveSetting("formant", (p - 20) / 10.0); loadSliders() }
+        })
+        liveBars["formant"] = formant
+        // the rest takes effect at the next start
+        val more = card(page)
+        val header = TextView(this).apply { textSize = 13f; setTypeface(typeface, Typeface.BOLD) }
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        fun setOpen(open: Boolean) {
+            body.visibility = if (open) View.VISIBLE else View.GONE
+            header.text = if (open) "▾  세부 설정 · 다음에 켤 때 적용" else "▸  세부 설정 · 다음에 켤 때 적용"
+            prefs.edit().putBoolean("live_settings_open", open).apply()
+        }
+        header.setOnClickListener { setOpen(body.visibility != View.VISIBLE) }
+        more.addView(header)
+        more.addView(body)
+        fun intSlider(key: String, label: String, default: Int, min: Int, max: Int, minLabel: String, maxLabel: String, show: (Int) -> String) {
+            val value = valueText()
+            val bar = sliderRow(body, label, value, minLabel, maxLabel, max - min)
+            bar.setOnSeekBarChangeListener(slider { p, done ->
+                value.text = show(p + min)
+                if (done) { prefs.edit().putInt(key, p + min).apply(); showLive() }
+            })
+            bar.progress = prefs.getInt(key, default) - min
+            value.text = show(bar.progress + min)
+        }
+        val seconds = { v: Int -> String.format(Locale.US, "%.2f초", v / 100.0) }
+        intSlider("live_block", "블록 · 한 번에 바꾸는 길이", 25, 15, 50, "0.15 빠름", "0.50 여유", seconds)
+        intSlider("live_crossfade", "크로스페이드", 8, 4, 12, "0.04", "0.12", seconds)
+        intSlider("live_cushion_cs", "출력 여유 · 끊김 대비", 6, 2, 20, "0.02", "0.20", seconds)
+        intSlider("live_threshold_db", "무음 기준", -60, -80, -30, "−80 dB", "−30 dB") { "$it dB" }
+        switchRow(body, "디코더 분할 (NPU + CPU 32비트)", "조금 덜 거칠지만 느려서 블록 0.4초 이상이 필요해요", "live_split")
+        switchRow(body, "스피커로 내보내기", "바뀐 목소리가 다시 마이크로 들어갈 수 있어요", "live_speaker")
+        switchRow(body, "변환 없이 통과 (진단)", "모델을 건너뛰고 마이크 소리를 그대로 내보내요", "live_bypass")
+        val export = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(14), 0, 0) }
+        export.addView(TextView(this).apply {
+            text = "진단 기록과 마지막 실시간 녹음을 다운로드/VoiceStudio에 넣어요 (PC로 옮겨서 볼 수 있게)"
+            textSize = 11f; setTextColor(getColor(R.color.muted))
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        export.addView(Button(this, null, 0, R.style.SoftButton).apply {
+            text = "기록 보내기"
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36)).apply { marginStart = dp(10) }
+            setOnClickListener { exportLive() }
+        })
+        body.addView(export)
+        setOpen(prefs.getBoolean("live_settings_open", false))
+    }
+
+    /** The live page's pitch and texture from the selected voice's settings.json. */
+    private fun loadLiveSliders() {
+        val dir = currentModel() ?: return
+        val j = settingsJson(dir)
+        fun num(k: String) = if (j.has(k)) j.optDouble(k, 0.0) else 0.0
+        liveBars["pitch"]?.progress = (num("pitch") + 24).roundToInt()
+        liveBars["formant"]?.progress = ((num("formant") + 2) * 10).roundToInt()
+    }
+
+    /** The decoder file realtime runs on the NPU: the integer one (8-bit weights, 16-bit activations; converter
+     *  converter/npu_export.py) when the voice has it. On the S23+ it sounds like the 32-bit decoder (spectrum 0.14 dB
+     *  apart, the floating 16-bit one 1.21 dB) for ~20% more decoder time. A test hook's --es dec wins. */
+    private fun liveDecoderFile(dir: File, ep: String): String = when {
+        decFile != "model.dec.onnx" -> decFile
+        ep != "qnn_htp" -> "model.dec.onnx"
+        prefs.getString("compute", "recommended") == "custom" && prefs.getString("custom_dec", "npu_int") == "npu16" -> "model.dec.onnx"
+        File(dir, W8A16).isFile -> W8A16
+        else -> "model.dec.onnx"
+    }
+
+    private fun toggleLive() {
+        if (LiveSession.engine != null) { stopLive(); return }
+        if (livePreparing) return
+        val mic = android.Manifest.permission.RECORD_AUDIO
+        if (checkSelfPermission(mic) != PackageManager.PERMISSION_GRANTED) {
+            // the notification that keeps it running with the screen off needs its own permission (Android 13+)
+            val ask = mutableListOf(mic)
+            if (android.os.Build.VERSION.SDK_INT >= 33) ask += android.Manifest.permission.POST_NOTIFICATIONS
+            requestPermissions(ask.toTypedArray(), LIVE_MIC)
+            return
+        }
+        val dir = currentModel() ?: run { toast("변환 탭에서 목소리 모델을 먼저 고르세요"); return }
+        if (!File(commonDir, "hubert.onnx").isFile || !File(commonDir, "rmvpe.onnx").isFile) { toast("공통 모델(hubert·rmvpe)이 필요해요 (변환 탭의 받기)"); return }
+        if (recorder != null) { toast("녹음을 멈추고 켜세요"); return }
+        if (busy) { toast("변환이 끝나면 켜세요"); return }
+        player.stop()
+        val params = liveParams()
+        val ep = if (prefs.getBoolean("live_split", false)) "split" else "qnn_htp"
+        val liveDec = liveDecoderFile(dir, ep)
+        val front = "qnn_htp"  // the CPU alone takes ~0.23 s a step for the front (S23+), more than a 0.2 s block
+        val threads = prefs.getInt("threads", 4)
+        val speaker = prefs.getBoolean("live_speaker", false)
+        val bypass = prefs.getBoolean("live_bypass", false)
+        val settings = settingsOf(dir)
+        livePreparing = true
+        liveMessage = "준비 중…"
+        lastLive = null
+        engine?.close(); engine = null; engineKey = ""  // the file engine makes room for the realtime models
+        ui.removeCallbacks(liveTicker)
+        ui.post(liveTicker)
+        updateConvertButton()
+        thread {
+            try {
+                val key = "${dir.path}|$ep|$liveDec|$front|$threads|${params.block}|${params.tail}"
+                if (LiveSession.rvcKey != key) {
+                    LiveSession.rvc?.close()
+                    LiveSession.rvc = null
+                    LiveSession.rvcKey = ""
+                    liveMessage = "모델 준비 중… (처음 쓰는 블록·디코더는 NPU 준비로 30초쯤 걸려요)"
+                    LiveSession.rvc = Rvc(commonDir, dir, threads, ep, liveDec, front, live = Rvc.LiveShape(params.block, params.tail))
+                    LiveSession.rvcKey = key
+                }
+                val e = LiveEngine(applicationContext, LiveSession.rvc!!, params, settings, speaker, bypass, base)
+                e.setGain(params.gainDb)
+                liveMessage = "예열 중…"
+                e.warmUp()
+                startForegroundService(Intent(this, LiveService::class.java))
+                e.start()
+                LiveSession.engine = e
+                liveMessage = null
+            } catch (t: Throwable) {
+                android.util.Log.e("VoiceStudio", "live start failed", t)
+                liveMessage = "켜지 못했어요: ${t.message}"
+                LiveSession.stop(applicationContext)
+            } finally {
+                livePreparing = false
+                ui.post { showLive(); updateConvertButton() }
+            }
+        }
+    }
+
+    private fun stopLive(failure: String? = null) {
+        val e = LiveSession.engine ?: return
+        lastLive = e.snapshot()
+        LiveSession.engine = null  // the ticker stops; the threads end below
+        liveMessage = failure ?: "멈추는 중…"
+        thread {
+            val saved = e.stopRecording()
+            e.stop()
+            LiveSession.stop(applicationContext)
+            ui.post {
+                liveMessage = failure
+                if (saved != null) {
+                    refreshRecordings()
+                    liveMessage = (failure?.let { "$it\n" } ?: "") + String.format(Locale.US, "녹음 탭에 저장했어요: %s (%.1f초)", saved.first.nameWithoutExtension.removeSuffix("_원본"), saved.third)
+                }
+                showLive()
+                updateConvertButton()
+            }
+        }
+    }
+
+    private fun toggleLiveRecording() {
+        val e = LiveSession.engine ?: return
+        if (e.snapshot().recording >= 0) {
+            thread {
+                val saved = e.stopRecording()
+                ui.post {
+                    refreshRecordings()
+                    if (saved != null) liveMessage = String.format(Locale.US, "녹음 탭에 저장했어요: %s (%.1f초)", saved.first.nameWithoutExtension.removeSuffix("_원본"), saved.third)
+                    showLive()
+                }
+            }
+        } else {
+            val stamp = SimpleDateFormat("MMdd_HHmmss", Locale.US).format(Date())
+            recordingsDir.mkdirs()
+            e.startRecording(File(recordingsDir, "실시간_${stamp}_원본.wav"), File(recordingsDir, "실시간_${stamp}_변환.wav"))
+            liveMessage = null
+        }
+        showLive()
+    }
+
+    /** The realtime diagnosis (logs, block timings) and the newest realtime recording into Download/VoiceStudio/live_<time>,
+     *  where a PC can reach them (the app's own folder is closed to other apps and to adb for files it made). */
+    private fun exportLive() {
+        thread {
+            val stamp = SimpleDateFormat("MMdd_HHmmss", Locale.US).format(Date())
+            val files = listOf("live_log.txt", "live_log_prev.txt", "live_blocks.csv", "live_blocks_prev.csv").map { File(base, it) }.filter { it.isFile } +
+                (recordingsDir.listFiles { f -> f.name.startsWith("실시간_") }?.sortedByDescending { it.lastModified() }?.take(2) ?: emptyList())
+            var done = 0
+            for (file in files) runCatching {
+                val values = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, file.name)
+                    put(MediaStore.Downloads.RELATIVE_PATH, "Download/VoiceStudio/live_$stamp")
+                }
+                val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return@runCatching
+                contentResolver.openOutputStream(uri)?.use { out -> file.inputStream().use { it.copyTo(out) } }
+                done++
+            }
+            ui.post { toast("다운로드/VoiceStudio/live_$stamp 에 파일 ${done}개를 넣었어요") }
+        }
+    }
+
+    private val thermalNames = listOf("정상", "약간 따뜻함", "따뜻함", "뜨거움 (느려질 수 있어요)", "아주 뜨거움", "위험", "종료 직전")
+
+    /** The live page: buttons, the two scrolling waveforms and the numbers that tell whether the phone keeps up. */
+    private fun showLive() {
+        val e = LiveSession.engine
+        if (e != null && !e.isRunning) {  // the worker stopped by itself (an error)
+            stopLive(e.snapshot().failure?.let { "멈췄어요: $it" } ?: "멈췄어요")
+            return
+        }
+        val s = e?.snapshot() ?: lastLive
+        val params = liveParams()
+        val decoder = when {
+            prefs.getBoolean("live_split", false) -> "분할 (NPU+CPU)"
+            currentModel()?.let { liveDecoderFile(it, "qnn_htp") } == W8A16 -> "NPU 정수 (8·16비트)"
+            else -> "NPU 16비트"
+        }
+        f<TextView>(R.id.live_device).text = "${currentModel()?.name ?: "모델 없음"} · 앞 단계 NPU · 디코더 $decoder · " +
+            String.format(Locale.US, "블록 %.2f초", params.block / 100.0) +
+            (if (prefs.getBoolean("live_bypass", false)) " · 통과(진단)" else "") +
+            (s?.output?.takeIf { it.isNotEmpty() }?.let { "\n출력: $it" } ?: "") + "\n위: 마이크 · 아래: 바뀐 목소리"
+        val toggle = f<Button>(R.id.live_toggle)
+        toggle.text = when { livePreparing -> "준비 중…"; e != null -> "끄기"; else -> "켜기" }
+        toggle.isEnabled = !livePreparing
+        val rec = f<Button>(R.id.live_rec)
+        val recording = (s?.recording ?: -1.0) >= 0 && e != null
+        rec.isEnabled = e != null
+        rec.text = if (recording) "■ 멈춤" else "● 녹음"
+        val recTime = f<TextView>(R.id.live_rec_time)
+        recTime.visibility = if (recording) View.VISIBLE else View.GONE
+        if (recording) recTime.text = clock((s!!.recording * Rvc.SR).toInt())
+        if (e != null && s != null) {
+            f<WaveformView>(R.id.live_in_wave).livePeaks = s.inPeaks
+            f<WaveformView>(R.id.live_out_wave).livePeaks = s.outPeaks
+        }
+        val stats = f<TextView>(R.id.live_stats)
+        if (s != null && s.steps > 0) {
+            val load = s.compute / s.block
+            stats.text = String.format(Locale.US, "단계 %.0f ms / 블록 %.0f ms (%.0f%%) · 최대 %.0f\n지연 약 %.2f초 · 끊김 %d · 건너뜀 %d%s\n입력 최대 %.0f dB · 출력 최대 %.0f dB%s · 발열 %s",
+                s.compute * 1000, s.block * 1000, load * 100, s.computeMax * 1000, s.latency, s.underruns, s.drops,
+                if (s.extraCushion > 0) String.format(Locale.US, " · 여유 +%.2f초", s.extraCushion) else "",
+                s.inPeakDb, s.outPeakDb, if (s.clips > 0) " (눌림 ${s.clips})" else "", thermalNames.getOrElse(s.thermal) { "${s.thermal}" })
+            stats.setTextColor(getColor(if (load > 1 || s.drops > 0) R.color.rec else R.color.text))
+        } else stats.text = ""
+        f<TextView>(R.id.live_info).text = liveMessage ?: when {
+            e != null -> "화면을 꺼도 계속 돌아요. 알림의 \"끄기\"로도 멈출 수 있어요."
+            else -> "이어폰을 끼고 켜세요. 이어폰이 없으면 통화 스피커(귀에 대는 곳)로 나와요."
+        }
+    }
+
     // ---------------------------------------------------------------- misc
 
     override fun onRequestPermissionsResult(code: Int, permissions: Array<out String>, results: IntArray) {
-        if (code == MIC && results.firstOrNull() == PackageManager.PERMISSION_GRANTED) toggleRecording()
+        val mic = permissions.indexOf(android.Manifest.permission.RECORD_AUDIO).let { results.getOrNull(it) } == PackageManager.PERMISSION_GRANTED
+        if (code == MIC && mic) toggleRecording()
         else if (code == MIC) toast("마이크 권한이 있어야 녹음할 수 있어요")
+        else if (code == LIVE_MIC && mic) toggleLive()
+        else if (code == LIVE_MIC) toast("마이크 권한이 있어야 실시간 변환을 할 수 있어요")
     }
 
     @Deprecated("Deprecated in Java")
@@ -813,7 +1292,7 @@ class MainActivity : Activity() {
         thread {
             val x = AudioIo.decode(this, Uri.fromFile(file))
             ui.post {
-                showPage(record = false)
+                showPage(CONVERT)
                 setInput(x, file.nameWithoutExtension); inputTake = null
                 f<Switch>(R.id.normalize).isChecked = false
                 runConversion { y, load, took ->
@@ -823,6 +1302,44 @@ class MainActivity : Activity() {
                         "converted %.1f s in %.1f s (model load %.1f s; %s): hubert %.1f, rmvpe %.1f, enc %.1f, dec %.1f, other %.1f",
                         x.size.toFloat() / Rvc.SR, took, load, engineKey.substringAfter('|'), t[0], t[1], t[2], t[3], t[4]))
                 }
+            }
+        }
+    }
+
+    /** Test hook: realtime steps over a file, without the audio devices (StreamBench). `am start -n
+     *  com.voicestudio.phone/.MainActivity --es stream <wav> [--es front cpu|qnn_htp --es ep cpu|ncnn_gpu|qnn_htp
+     *  --ei threads N --ei block 20 --ei context 100 --ei crossfade 8 --ei search 1 --ef cushion 0.06 --ez paced true
+     *  --ef seconds 30 --ef gain_db 0 --ef threshold_db -120]` writes files/stream_output.wav and stream_steps.csv
+     *  and logs a summary line starting with "stream". */
+    private fun debugStream(file: File) {
+        val dir = models.firstOrNull { it.name == (hooks.getStringExtra("model") ?: prefs.getString("model", null)) }
+            ?: currentModel() ?: return
+        val params = LiveParams(hooks.getIntExtra("block", 20), hooks.getIntExtra("context", 100),
+            hooks.getIntExtra("crossfade", 8), hooks.getIntExtra("search", 1),
+            hooks.getFloatExtra("cushion", 0.06f).toDouble(), hooks.getFloatExtra("threshold_db", -120f).toDouble(),
+            hooks.getFloatExtra("gain_db", 0f).toDouble())
+        val front = hooks.getStringExtra("front") ?: "cpu"
+        val ep = hooks.getStringExtra("ep") ?: "ncnn_gpu"
+        val threads = hooks.getIntExtra("threads", 4)
+        val log = { m: String -> android.util.Log.i("VoiceStudio", m); Unit }
+        thread {
+            try {
+                val x = AudioIo.decode(this, Uri.fromFile(file))
+                val t0 = System.nanoTime()
+                Rvc(commonDir, dir, threads, ep, decFile, front, seed = hooks.getIntExtra("seed", 0).toLong(),
+                    live = Rvc.LiveShape(params.block, params.tail),
+                    cpuFixedWindows = hooks.getBooleanExtra("fixed_windows", false),
+                    profileDir = if (hooks.getBooleanExtra("profile", false)) File(base, "profiles").apply { mkdirs() } else null).use { rvc ->
+                    log(String.format(Locale.US, "stream engine ready in %.1f s: front %s, decoder %s (%s)",
+                        (System.nanoTime() - t0) / 1e9, front, ep, rvc.decoderDevice))
+                    val r = StreamBench.run(rvc, params, settingsOf(dir), x, hooks.getBooleanExtra("paced", true),
+                        hooks.getFloatExtra("seconds", (x.size / 48000f)).toDouble(), log = log)
+                    AudioIo.writeWav(File(base, "stream_output.wav"), r.output)
+                    File(base, "stream_steps.csv").writeText(r.csv)
+                    log(r.summary + " | front $front, decoder $ep, threads $threads, model ${dir.name}")
+                }
+            } catch (e: Throwable) {
+                android.util.Log.e("VoiceStudio", "stream failed", e)
             }
         }
     }
@@ -841,5 +1358,11 @@ class MainActivity : Activity() {
         private const val MIC = 2
         private const val PICK_FOLDER = 3
         private const val PICK_ZIP = 4
+        private const val LIVE_MIC = 5
+        private const val W8A16 = "model.dec.w8a16.onnx"
+        private const val RECORD = "record"
+        private const val CONVERT = "convert"
+        private const val LIVE = "live"
+        private const val SETTINGS = "settings"
     }
 }

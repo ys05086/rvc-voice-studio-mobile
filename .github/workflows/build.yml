@@ -1,24 +1,16 @@
-# Builds the Android APK and the iPhone IPA. Run it by hand (Actions > build > Run workflow) or push a tag
-# v* to also publish both as a release. macOS minutes count 10x, so the iPhone build only runs when asked.
+# Tests and builds the Android APK on every push to main, on pull requests and by hand (Actions > build > Run
+# workflow). The APK here is signed with a throwaway debug key unless the repository has ANDROID_KEYSTORE_B64 and
+# ANDROID_KEYSTORE_PASSWORD; releases are published by hand with an APK signed by the project's key.
 name: build
 
 on:
-  workflow_dispatch:
-    inputs:
-      android:
-        description: Android APK
-        type: boolean
-        default: true
-      ios:
-        description: iPhone IPA (macOS)
-        type: boolean
-        default: true
   push:
-    tags: ["v*"]
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
 
 jobs:
   android:
-    if: github.event_name == 'push' || inputs.android
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -35,8 +27,6 @@ jobs:
           if [ -n "$KEYSTORE_B64" ]; then
             echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
             echo "VS_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
-          else
-            echo "::warning::ANDROID_KEYSTORE_B64 is not set: the APK is signed with a throwaway debug key"
           fi
       - name: Test and build
         working-directory: android
@@ -48,79 +38,3 @@ jobs:
         with:
           name: android
           path: VoiceStudio.apk
-
-  dsp:
-    # the iPhone app's numeric code against the Android golden vectors, on cheap Linux minutes first
-    if: github.event_name == 'push' || inputs.ios
-    runs-on: ubuntu-latest
-    container: swift:6.0-jammy
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - run: swift test
-
-  ios:
-    if: github.event_name == 'push' || inputs.ios
-    needs: dsp
-    runs-on: macos-15
-    timeout-minutes: 40
-    env:
-      HOMEBREW_NO_AUTO_UPDATE: "1"
-      HOMEBREW_NO_INSTALL_CLEANUP: "1"
-    steps:
-      - uses: actions/checkout@v4
-      - name: XcodeGen
-        run: command -v xcodegen || brew install xcodegen
-      - uses: actions/cache@v4
-        with:
-          path: ios/build/SourcePackages
-          key: spm-${{ hashFiles('ios/project.yml') }}
-      - name: Generate project
-        working-directory: ios
-        run: xcodegen generate
-      - name: Build (unsigned)
-        working-directory: ios
-        run: |
-          xcodebuild -project VoiceStudio.xcodeproj -scheme VoiceStudio -configuration Release \
-            -sdk iphoneos -destination 'generic/platform=iOS' \
-            -derivedDataPath build -clonedSourcePackagesDirPath build/SourcePackages \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
-            build > build.log 2>&1 || { grep -E "error:|failed" build.log | head -80; tail -40 build.log; exit 1; }
-          grep -c "warning:" build.log || true
-      - name: Package IPA
-        working-directory: ios
-        run: |
-          mkdir -p Payload
-          cp -R build/Build/Products/Release-iphoneos/VoiceStudio.app Payload/
-          zip -qry VoiceStudio.ipa Payload
-          ls -la VoiceStudio.ipa
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ios
-          path: ios/VoiceStudio.ipa
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: ios-build-log
-          path: ios/build.log
-          if-no-files-found: ignore
-
-  release:
-    if: github.event_name == 'push'
-    needs: [android, ios]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: "{android,ios}"
-          path: out
-          merge-multiple: true
-      - name: Publish
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "$GITHUB_REF_NAME" out/VoiceStudio.apk out/VoiceStudio.ipa \
-            --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --prerelease \
-            --notes "Android: VoiceStudio.apk 설치. iPhone: VoiceStudio.ipa를 SideStore/AltStore로 설치(무료 Apple ID는 7일마다 다시 서명)."

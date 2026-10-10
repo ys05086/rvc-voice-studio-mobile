@@ -176,3 +176,27 @@ class Recorder(context: Context) {
         }
     }
 }
+
+/** A 48 kHz mono 16-bit WAV written as it grows (realtime recordings); the sizes in the header are set by [finish]. */
+class WavWriter(val file: File) {
+    private val out = java.io.RandomAccessFile(file, "rw").apply { setLength(0); write(ByteArray(44)) }
+    var samples = 0
+        private set
+
+    fun append(x: FloatArray) {
+        val data = ByteBuffer.allocate(x.size * 2).order(ByteOrder.LITTLE_ENDIAN)
+        for (v in x) data.putShort((v.coerceIn(-1f, 1f) * 32767).toInt().toShort())
+        out.write(data.array())
+        samples += x.size
+    }
+
+    fun finish() {
+        val header = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)
+        header.put("RIFF".toByteArray()).putInt(36 + samples * 2).put("WAVE".toByteArray())
+            .put("fmt ".toByteArray()).putInt(16).putShort(1).putShort(1).putInt(Rvc.SR).putInt(Rvc.SR * 2)
+            .putShort(2).putShort(16).put("data".toByteArray()).putInt(samples * 2)
+        out.seek(0)
+        out.write(header.array())
+        out.close()
+    }
+}

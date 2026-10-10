@@ -2,13 +2,14 @@
 
 The PC converter (`converter/rvc/`) contains model code from
 [RVC-Project/Retrieval-based-Voice-Conversion-WebUI](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI)
-(MIT, see `converter/rvc/LICENSE`). The apps reimplement RVC's inference pipeline around ONNX exports of those models.
+(MIT, see `converter/rvc/LICENSE`). The app reimplements RVC's inference pipeline around ONNX exports of those models.
 
-## Used by the apps, not stored here
+## Used by the app, not stored here
 
 | Component | Source | License |
 | --- | --- | --- |
-| ONNX Runtime | github.com/microsoft/onnxruntime (Android AAR, Swift package) | MIT |
+| ONNX Runtime with the QNN execution provider | github.com/microsoft/onnxruntime (Android AAR `onnxruntime-android-qnn`) | MIT |
+| Qualcomm AI Engine Direct (QNN) runtime libraries | bundled in the ONNX Runtime QNN package | their own license |
 | ncnn (Android GPU decoder) | github.com/Tencent/ncnn | BSD-3-Clause |
 | ContentVec (HuBERT base), as `hubert.onnx` | huggingface.co/lengyue233/content-vec-best | MIT |
 | RMVPE, as `rmvpe.onnx` | huggingface.co/lj1995/VoiceConversionWebUI | MIT |

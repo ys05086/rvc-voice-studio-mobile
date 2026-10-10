@@ -17,6 +17,8 @@ object CommonModels {
     val items = listOf(
         Item("hubert.onnx", 377_684_408, "97b93aa2bdbd21dd5bc42feab375d95f107f8b7c22ca0fa0a13548eba7d9df50"),
         Item("rmvpe.onnx", 366_167_422, "6ae60d54b5b2f6633079aa8246637486e2fef8cfbbb9a60386f090e0ddcdf1b4"),
+        // HuBERT as the Snapdragon NPU takes it whole (GELUs fused; converter/htp_export.py): Android's NPU front
+        Item("hubert.htp.onnx", 377_651_269, "7a24d82a6728d88b1c4ffc7c7581b8992f1f16a9173dc088a8884e480530f8f1"),
     )
     val totalBytes = items.sumOf { it.bytes }
 

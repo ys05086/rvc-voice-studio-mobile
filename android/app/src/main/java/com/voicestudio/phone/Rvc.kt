@@ -32,7 +32,16 @@ import kotlin.math.sqrt
 class Rvc(commonDir: File, private val modelDir: File, private val threads: Int = 4, private val ep: String = "cpu",
           decFile: String = "model.dec.onnx", private val front: String = "cpu",
           /** NPU windows hold this much new audio (16 kHz samples, a multiple of 320) plus context and fade. */
-          private val frontChunk: Int = 3 * SR16) : AutoCloseable {
+          private val frontChunk: Int = 3 * SR16, seed: Long = 0,
+          /** Realtime: the shapes one step needs (see [streamWindow]); null for file conversion. */
+          private val live: LiveShape? = null,
+          /** The NPU's fixed windows even on the CPU: a control for comparing the two with everything else equal. */
+          cpuFixedWindows: Boolean = false,
+          /** Diagnosis: ORT profiles of the NPU sessions (which device ran each node) go here as <model>_*.json. */
+          private val profileDir: File? = null) : AutoCloseable {
+    /** A realtime step: [block] new frames, the last [tail] frames of the window decoded (block + crossfade + search). */
+    data class LiveShape(val block: Int, val tail: Int)
+
     data class Settings(
         val pitch: Double = 0.0, val formant: Double = 0.0,
         val lowRatio: Double = 1.0, val lowKnee: Double = 120.0,
@@ -60,14 +69,25 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
         NcnnDecoder(File(modelDir, "model.dec.ncnn.param"), File(modelDir, "model.dec.ncnn.bin"), true, threads)
             .takeIf { it.usesGpu } ?: throw IllegalStateException("no Vulkan GPU")
     }.getOrNull()
-    /** Where the decoder runs, for the result line: "GPU", "NPU" or "CPU". */
-    val decoderDevice = when { ncnn != null -> "GPU"; qnnOptions(ep) != null -> "NPU"; else -> "CPU" }
+    /** "split": the decoder's first three upsampling stages (88% of its work, which survive 16 bits on the PC) on the
+     *  NPU, the last stage with the output layer (which does not) on the CPU in 32 bits, from model.dec_a/dec_b.onnx
+     *  (made by the converter). Without those files the whole decoder runs on the CPU. */
+    private val split = ep == "split" && File(modelDir, "model.dec_a.onnx").isFile && File(modelDir, "model.dec_b.onnx").isFile
+    /** Where the decoder runs, for the result line: "GPU", "NPU", "NPU+CPU" or "CPU". */
+    val decoderDevice = when {
+        ncnn != null -> "GPU"; split -> "NPU+CPU"
+        qnnOptions(ep) != null -> if ("w8a16" in decFile) "NPU 정수" else "NPU 16비트"
+        else -> "CPU"
+    }
     /** QNN and the ncnn graph need fixed shapes: the decoder then runs in DEC_FRAMES pieces (see [decode]). */
-    private val decFixed = qnnOptions(ep) != null || ncnn != null
+    private val decFixed = qnnOptions(ep) != null || ncnn != null || split
+    /** Frames per decoder run: DEC_FRAMES pieces for files; realtime decodes the tail and its left context, sized for
+     *  the highest formant so the shape never changes while the slider moves (a lower formant takes more context). */
+    val decFrames = if (live == null) DEC_FRAMES else ceil((live.tail + LIVE_DEC_CONTEXT) * MAX_FORMANT_FACTOR).toInt()
     private val decOptions = options(true).apply {
         if (decFixed) {
-            setSymbolicDimensionValue("n", DEC_FRAMES.toLong())
-            setSymbolicDimensionValue("samples", DEC_FRAMES * 480L)
+            setSymbolicDimensionValue("n", decFrames.toLong())
+            setSymbolicDimensionValue("samples", decFrames * 480L)
         }
     }
     /** Seconds spent per stage since the engine was made: hubert, rmvpe, enc, dec, other. */
@@ -75,17 +95,25 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
     /** HuBERT, RMVPE and enc on the NPU ("qnn_htp"): fp16 is fine for features, unlike for the decoder that makes
      *  the waveform. QNN needs fixed shapes, so every window is exactly [window] samples (see [convert]). */
     private val frontFixed = qnnOptions(front) != null
-    private fun frontSession(src: File, cache: File, dims: Map<String, Long>): OrtSession {
-        if (!frontFixed) return env.createSession(src.path, options)
+    private val fixedWindows = frontFixed || cpuFixedWindows
+    private fun frontSession(src: File, cache: File, dims: Map<String, Long>): OrtSession =
+        if (!frontFixed) env.createSession(src.path, options) else npuSession(src, cache, qnnOptions(front)!!, dims)
+    /** A model on the NPU with fixed shapes; its compiled graph is kept in `cache`, so later starts skip the long
+     *  preparation (a cache that no longer loads is made again). */
+    private fun npuSession(src: File, cache: File, qnn: Map<String, String>, dims: Map<String, Long>): OrtSession {
+        val profile = profileDir?.let { File(it, cache.nameWithoutExtension).path }
         cache.takeIf { it.isFile }?.let { c ->
-            runCatching { return env.createSession(c.path, frontOptions(dims, null)) }.onFailure { c.delete() }
+            runCatching { return env.createSession(c.path, npuOptions(qnn, dims, null, profile)).also { profiled += it } }
+                .onFailure { c.delete() }
         }
-        return env.createSession(src.path, frontOptions(dims, cache))
+        return env.createSession(src.path, npuOptions(qnn, dims, cache, profile)).also { profiled += it }
     }
-    private fun frontOptions(dims: Map<String, Long>, saveTo: File?) = OrtSession.SessionOptions().apply {
+    private val profiled = ArrayList<OrtSession>()
+    private fun npuOptions(qnn: Map<String, String>, dims: Map<String, Long>, saveTo: File?, profile: String?) = OrtSession.SessionOptions().apply {
         setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
         setIntraOpNumThreads(threads)
-        qnnOptions(front)?.let { addQnn(it) }
+        if (profile != null) enableProfiling(profile)
+        addQnn(qnn)
         for ((name, value) in dims) setSymbolicDimensionValue(name, value)
         if (saveTo != null) {  // the NPU's compiled graph, so later starts skip the long preparation
             addConfigEntry("ep.context_enable", "1")
@@ -95,13 +123,28 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
     }
     /** The NPU's fixed window at 16 kHz: a chunk, the cross-fade and a second of context each side. */
     val window = frontChunk + 320 + 2 * 16000
-    private val frames = window / 160
-    private val hubert = frontSession(File(commonDir, "hubert.onnx"), File(commonDir, "hubert.$front.$window.onnx"), mapOf("samples" to window.toLong()))
-    private val rmvpe = frontSession(File(commonDir, "rmvpe.onnx"), File(commonDir, "rmvpe.$front.$window.onnx"), mapOf("samples" to window.toLong()))
+    /** Realtime with the front on the NPU: the window every step's HuBERT and enc see, in 10 ms frames (the context is
+     *  what the block, crossfade and search leave of it); null when any length goes (the CPU) or for files. */
+    val realtimeWindow: Int? = if (live != null && fixedWindows) REALTIME_WINDOW else null
+    private val frames = realtimeWindow ?: (window / 160)
+    private val hubertSamples = realtimeWindow?.let { it * 160 } ?: window
+    /** realtime RMVPE sees only the newest audio ([StreamState.samples]); files the whole window */
+    private val rmvpeSamples = if (live != null) StreamState.rmvpeSamples(live.block) else window
+    /** On the NPU, HuBERT with its GELUs fused into single nodes when the converter made that file (htp_export.py):
+     *  QNN has no Erf on the HTP, so the plain file ran 20 of its nodes on the CPU in between 21 NPU pieces. */
+    private val hubertFile = File(commonDir, "hubert.htp.onnx").takeIf { frontFixed && it.isFile } ?: File(commonDir, "hubert.onnx")
+    private val hubert = frontSession(hubertFile, File(commonDir, "${hubertFile.nameWithoutExtension}.$front.$hubertSamples.onnx"), mapOf("samples" to hubertSamples.toLong()))
+    private val rmvpe = frontSession(File(commonDir, "rmvpe.onnx"), File(commonDir, "rmvpe.$front.$rmvpeSamples.onnx"), mapOf("samples" to rmvpeSamples.toLong()))
     private val enc = frontSession(File(modelDir, "model.enc.onnx"), File(modelDir, "model.enc.$front.$frames.onnx"), mapOf("T" to frames.toLong()))
     /** The NPU's compiled decoder, saved after the first preparation (~12 s) and loaded directly after that. */
-    val compiledDecoder = File(modelDir, "model.dec.$ep.onnx")
-    private val dec: OrtSession? = if (ncnn != null) null else if (qnnOptions(ep) == null) env.createSession(File(modelDir, decFile).path, decOptions) else
+    /** Named after the decoder file (model.dec.onnx -> model.dec.qnn_htp[.nN].onnx), so a quantized variant
+     *  (model.dec.w8a16.onnx) gets its own. */
+    val compiledDecoder = File(modelDir, decFile.removeSuffix(".onnx") + if (decFrames == DEC_FRAMES) ".$ep.onnx" else ".$ep.n$decFrames.onnx")
+    private val decA: OrtSession? = if (!split) null else npuSession(File(modelDir, "model.dec_a.onnx"),
+        File(modelDir, "model.dec_a.qnn_htp.n$decFrames.onnx"), qnnOptions("qnn_htp")!!,
+        mapOf("n" to decFrames.toLong(), "samples" to decFrames * 480L))
+    private val decB: OrtSession? = if (!split) null else env.createSession(File(modelDir, "model.dec_b.onnx").path, options)
+    private val dec: OrtSession? = if (ncnn != null || split) null else if (qnnOptions(ep) == null) env.createSession(File(modelDir, decFile).path, decOptions) else
         compiledDecoder.takeIf { it.isFile }?.let { cached ->
             runCatching { env.createSession(cached.path, options(true)) }.getOrElse { cached.delete(); null }
         } ?: run {
@@ -110,10 +153,11 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
             decOptions.addConfigEntry("ep.context_file_path", compiledDecoder.path)
             env.createSession(File(modelDir, decFile).path, decOptions)
         }
-    private val rng = Random(0)
+    private val rng = Random(seed)
 
     override fun close() {
-        listOfNotNull(hubert, rmvpe, enc, dec).forEach { it.close() }
+        if (profileDir != null) profiled.forEach { runCatching { it.endProfiling() } }
+        listOfNotNull(hubert, rmvpe, enc, dec, decA, decB).forEach { it.close() }
         ncnn?.close()
         options.close(); decOptions.close()
     }
@@ -122,7 +166,7 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
     fun convert(x48: FloatArray, st: Settings, progress: (Int, Int) -> Unit = { _, _ -> }): FloatArray {
         var x16 = Dsp.resample(x48, SR, SR16)
         x16 = x16.copyOf(x16.size + Math.floorMod(-x16.size, UNIT))
-        val chunk = if (frontFixed) frontChunk else (CHUNK_S * SR16).toInt() / UNIT * UNIT
+        val chunk = if (fixedWindows) frontChunk else (CHUNK_S * SR16).toInt() / UNIT * UNIT
         val ctx = (CONTEXT_S * SR16).toInt() / UNIT * UNIT
         val fade = (FADE_S * SR16).toInt() / UNIT * UNIT
         val out = FloatArray(x16.size * 3)
@@ -132,13 +176,14 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
             val coreEnd = min(start + chunk + fade, x16.size)
             var lo = max(0, start - ctx)
             var hi = min(x16.size, coreEnd + ctx)
-            val win = if (!frontFixed) x16.copyOfRange(lo, hi) else {
+            val win = if (!fixedWindows) x16.copyOfRange(lo, hi) else {
                 // fixed-size windows for the NPU: fill with real audio by reaching further back, pad only short clips
                 lo = max(0, hi - window)
                 hi = min(x16.size, lo + window)
                 x16.copyOfRange(lo, hi).copyOf(window)
             }
-            val y = window(win, st)
+            // only the frames this window contributes go through the decoder, not its context
+            val y = window(win, st, (start - lo) / 160, (coreEnd - lo + 159) / 160)
             val a = (start - lo) * 3
             val n = (coreEnd - lo) * 3 - a
             val f = fade * 3
@@ -162,14 +207,76 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
         return y
     }
 
-    /** One window of 16 kHz audio (a multiple of 320 samples) -> 48 kHz audio of the same duration. */
-    private fun window(x16: FloatArray, st: Settings): FloatArray {
-        val pLen = x16.size / 160
-        var t0 = System.nanoTime()
+    /** One window of 16 kHz audio (a multiple of 320 samples) -> 48 kHz audio of the same duration, of which only
+     *  frames [keepFrom, keepTo) are decoded (the rest is the window's context and stays silent). */
+    private fun window(x16: FloatArray, st: Settings, keepFrom: Int, keepTo: Int): FloatArray {
+        val clock = Lap()
+        val (z, f0, pLen) = analyze(x16, st, null, clock)
+        val factor = 2.0.pow(st.formant / 12)
+        val n = ceil(pLen * factor).toInt()
+        val zn = Dsp.stretchLinear(z, 192, pLen, n)
+        val f0n = Dsp.stretchNearest(f0, n)  // no n/pLen factor: the excitation is built at n frames directly
+        val sine = Dsp.nsfSource(f0n, rng)
+        clock.lap(4)
+        // a frame more each side for the formant's resampling back to 48 kHz
+        var audio = decode(zn, n, sine, max(0, floor(keepFrom * factor).toInt() - 1), min(n, ceil(keepTo * factor).toInt() + 1))
+        clock.lap(3)
+        val upp = floor(factor * 480).toInt()
+        if (upp != 480) audio = Dsp.resample(audio.copyOf(min(audio.size, pLen * upp)), upp, 480)
+        return audio.copyOf(pLen * 480).also { clock.lap(4) }
+    }
+
+    /** Realtime: one 16 kHz window (past context plus the newest audio, a multiple of 320 samples) -> 48 kHz audio for
+     *  its last `tail` frames. Only those frames, with their left context, go through the decoder ([decFrames] of them,
+     *  whatever the formant). [state] carries the excitation's phase to the next window, whose decoder starts
+     *  `advance` frames later (so the harmonics run on without a jump), and the pitch of frames seen before. */
+    fun streamWindow(x16: FloatArray, st: Settings, tail: Int, advance: Int, state: StreamState?): FloatArray {
+        val clock = Lap()
+        state?.advance(advance)
+        val (z, f0, pLen) = analyze(x16, st, state, clock)
+        val fixed = decFrames
+        val factor = 2.0.pow(st.formant / 12)
+        val d = min(pLen, max(tail, floor(fixed / factor).toInt()))
+        val zd = FloatArray(192 * d)
+        for (c in 0 until 192) System.arraycopy(z, c * pLen + pLen - d, zd, c * d, d)
+        val n = ceil(d * factor).toInt()
+        val zn = Dsp.stretchLinear(zd, 192, d, n)
+        val f0n = Dsp.stretchNearest(f0.copyOfRange(pLen - d, pLen), n)
+        val mark = (advance * factor * 480).roundToInt()
+        val (source, phaseAtMark) = Dsp.nsfSource(f0n, rng, state?.phase ?: 0.0, mark)
+        state?.phase = phaseAtMark
+        // pad on the left up to the fixed size (that part is context and gets dropped)
+        val pad = max(0, fixed - n)
+        val zp = if (pad == 0) zn else FloatArray(192 * (n + pad)).also {
+            for (c in 0 until 192) System.arraycopy(zn, c * n, it, c * (n + pad) + pad, n)
+        }
+        val sp = if (pad == 0) source else FloatArray((n + pad) * 480).also { System.arraycopy(source, 0, it, pad * 480, source.size) }
+        clock.lap(4)
+        var audio = runDec(zp, n + pad, sp)
+        if (pad > 0) audio = audio.copyOfRange(pad * 480, audio.size)
+        clock.lap(3)
+        val upp = floor(factor * 480).toInt()
+        if (upp != 480) audio = Dsp.resampleRepeated(audio.copyOf(min(audio.size, d * upp)), upp, 480)  // same size every step
+        audio = audio.copyOf(d * 480)
+        clock.lap(4)
+        val keep = (d - min(tail, d)) * 480  // drop the decoder's left context
+        return audio.copyOfRange(keep, audio.size)
+    }
+
+    /** Adds the time since the last lap to a stage of [timing]. */
+    private inner class Lap {
+        private var t0 = System.nanoTime()
         fun lap(stage: Int) { val t = System.nanoTime(); timing[stage] += (t - t0) / 1e9; t0 = t }
+    }
+
+    private data class Analysis(val z: FloatArray, val f0: DoubleArray, val pLen: Int)
+
+    /** HuBERT, RMVPE, pitch shaping and enc over one 16 kHz window: the latent z [192, pLen] and the shifted f0. */
+    private fun analyze(x16: FloatArray, st: Settings, cache: StreamState?, clock: Lap): Analysis {
+        val pLen = x16.size / 160
         // content: 50 fps, last frame repeated, each frame doubled to 100 fps
         val feats50 = run(hubert, "audio", x16, longArrayOf(1, x16.size.toLong()))
-        lap(0)
+        clock.lap(0)
         val f50 = feats50.size / 768
         val phone = FloatArray(pLen * 768)
         for (t in 0 until pLen) {
@@ -177,20 +284,29 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
             System.arraycopy(feats50, min(src, f50 - 1) * 768, phone, t * 768, 768)
         }
         // pitch
-        val salience = run(rmvpe, "audio", x16, longArrayOf(1, x16.size.toLong()))
-        lap(1)
-        var f0 = Dsp.decodeF0(salience, salience.size / 360).copyOf(pLen)
+        var f0: DoubleArray
+        if (cache != null && cache.f0.size == pLen && cache.samples < x16.size) {
+            // only the newest audio: its frame j is window frame pLen - k + j; the first 3 and the very last lack
+            // context and are left to the neighbouring steps (RVC's cache_pitch[4 - n:] = pitch[3:-1])
+            val k = cache.samples / 160
+            val newest = x16.copyOfRange(x16.size - cache.samples, x16.size)
+            val salience = run(rmvpe, "audio", newest, longArrayOf(1, newest.size.toLong()))
+            val part = Dsp.decodeF0(salience, salience.size / 360)
+            for (j in 3 until min(k, part.size)) cache.f0[pLen - k + j] = part[j]
+            f0 = cache.f0.copyOf()
+        } else {
+            val salience = run(rmvpe, "audio", x16, longArrayOf(1, x16.size.toLong()))
+            f0 = Dsp.decodeF0(salience, salience.size / 360).copyOf(pLen)
+        }
+        clock.lap(1)
         f0 = Dsp.fillUnvoiced(f0, if (st.unvoicedKeep) UNVOICED_FILL_FRAMES else null)
         f0 = Dsp.shapePitch(f0, st.lowKnee, st.lowRatio, st.highKnee, st.highRatio,
             INTONATION_CENTER_HZ, if (st.expand) st.expandRatio else 1.0)
         val key = 2.0.pow((st.pitch - st.formant) / 12)  // the formant moves by time stretch; pitch compensates
         for (t in f0.indices) f0[t] *= key
         val coarse = LongArray(pLen) { Dsp.coarse(f0[it]) }
-        // synthesis
-        val factor = 2.0.pow(st.formant / 12)
-        val n = ceil(pLen * factor).toInt()
         val noise = FloatArray(192 * pLen) { rng.nextGaussian().toFloat() }
-        lap(4)
+        clock.lap(4)
         val z = OnnxTensor.createTensor(env, FloatBuffer.wrap(phone), longArrayOf(1, pLen.toLong(), 768)).use { ph ->
             OnnxTensor.createTensor(env, LongBuffer.wrap(coarse), longArrayOf(1, pLen.toLong())).use { pi ->
                 OnnxTensor.createTensor(env, FloatBuffer.wrap(noise), longArrayOf(1, 192, pLen.toLong())).use { no ->
@@ -198,20 +314,25 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
                 }
             }
         }
-        lap(2)
-        val zn = Dsp.stretchLinear(z, 192, pLen, n)
-        val f0n = Dsp.stretchNearest(f0, n)  // no n/pLen factor: the excitation is built at n frames directly
-        val sine = Dsp.nsfSource(f0n, rng)
-        lap(4)
-        var audio = decode(zn, n, sine)
-        lap(3)
-        val upp = floor(factor * 480).toInt()
-        if (upp != 480) audio = Dsp.resample(audio.copyOf(min(audio.size, pLen * upp)), upp, 480)
-        return audio.copyOf(pLen * 480).also { lap(4) }
+        clock.lap(2)
+        return Analysis(z, f0, pLen)
     }
 
     private fun runDec(z: FloatArray, frames: Int, sine: FloatArray): FloatArray {
         ncnn?.let { return it.decode(z, frames, sine) }
+        if (decA != null && decB != null) {
+            val hidden = OnnxTensor.createTensor(env, FloatBuffer.wrap(z), longArrayOf(1, 192, frames.toLong())).use { zt ->
+                OnnxTensor.createTensor(env, FloatBuffer.wrap(sine), longArrayOf(1, sine.size.toLong(), 1)).use { st ->
+                    decA.run(mapOf("z" to zt, "sine" to st)).use { floats(it[0] as OnnxTensor) }
+                }
+            }
+            val length = frames * 240L  // the hidden signal runs at 24 kHz: 240 samples a frame
+            return OnnxTensor.createTensor(env, FloatBuffer.wrap(hidden), longArrayOf(1, hidden.size / length, length)).use { ht ->
+                OnnxTensor.createTensor(env, FloatBuffer.wrap(sine), longArrayOf(1, sine.size.toLong(), 1)).use { st ->
+                    decB.run(mapOf("hidden" to ht, "sine" to st)).use { floats(it[0] as OnnxTensor) }
+                }
+            }
+        }
         val session = dec ?: throw IllegalStateException("디코더가 없어요")
         return OnnxTensor.createTensor(env, FloatBuffer.wrap(z), longArrayOf(1, 192, frames.toLong())).use { zt ->
             OnnxTensor.createTensor(env, FloatBuffer.wrap(sine), longArrayOf(1, sine.size.toLong(), 1)).use { st ->
@@ -220,15 +341,25 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
         }
     }
 
-    /** The decoder over n frames: in one go, or for fixed-shape runtimes in DEC_FRAMES windows that keep
-     *  DEC_CONTEXT frames of context each side. The decoder is local, so the pieces join exactly (checked on
-     *  the PC: frames away from the clip's two ends match a one-shot decode at >100 dB). */
-    private fun decode(z: FloatArray, n: Int, sine: FloatArray): FloatArray {
-        if (!decFixed) return runDec(z, n, sine)
-        val hop = DEC_FRAMES - 2 * DEC_CONTEXT
+    /** The decoder over frames [from, to) of n (the rest of the output stays silent): in one go with DEC_CONTEXT
+     *  frames of context each side, or for fixed-shape runtimes in DEC_FRAMES windows that keep that context. The
+     *  decoder is local, so the pieces join exactly (checked on the PC: frames away from the clip's two ends match a
+     *  one-shot decode at >100 dB). */
+    private fun decode(z: FloatArray, n: Int, sine: FloatArray, from: Int = 0, to: Int = n): FloatArray {
         val out = FloatArray(n * 480)
-        var start = 0
-        while (start < n) {
+        if (!decFixed) {
+            val a = max(0, from - DEC_CONTEXT)
+            val b = min(n, to + DEC_CONTEXT)
+            if (a == 0 && b == n) return runDec(z, n, sine)
+            val zz = FloatArray(192 * (b - a))
+            for (c in 0 until 192) System.arraycopy(z, c * n + a, zz, c * (b - a), b - a)
+            val y = runDec(zz, b - a, sine.copyOfRange(a * 480, b * 480))
+            System.arraycopy(y, (from - a) * 480, out, from * 480, (to - from) * 480)
+            return out
+        }
+        val hop = DEC_FRAMES - 2 * DEC_CONTEXT
+        var start = from
+        while (start < to) {
             val lo = start - DEC_CONTEXT
             val zz = FloatArray(192 * DEC_FRAMES)
             val ss = FloatArray(DEC_FRAMES * 480)
@@ -237,7 +368,7 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
             for (c in 0 until 192) System.arraycopy(z, c * n + a, zz, c * DEC_FRAMES + (a - lo), b - a)
             System.arraycopy(sine, a * 480, ss, (a - lo) * 480, (b - a) * 480)
             val y = runDec(zz, DEC_FRAMES, ss)
-            val take = min(hop, n - start)
+            val take = min(hop, to - start)
             System.arraycopy(y, DEC_CONTEXT * 480, out, start * 480, take * 480)
             start += hop
         }
@@ -296,7 +427,14 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
         }
 
         const val DEC_FRAMES = 200  // 2 s pieces for fixed-shape runtimes (QNN)
+        /** The formant slider's top (+2 semitones): realtime sizes its decoder input for it. */
+        val MAX_FORMANT_FACTOR = 2.0.pow(2.0 / 12)
+        /** Realtime window of the NPU's fixed-shape front models, in 10 ms frames (1.6 s, as on the iPhone). */
+        const val REALTIME_WINDOW = 160
         const val DEC_CONTEXT = 16  // 160 ms of context each side
+        /** Realtime decodes with 10 frames of left context: on the PC the kept block then matches a one-shot decode
+         *  at 126 dB (8 frames: 62 dB, 6: 35 dB). */
+        const val LIVE_DEC_CONTEXT = 10
         const val SR = 48000
         const val SR16 = 16000
         const val UNIT = 320  // one HuBERT frame at 16 kHz
@@ -305,6 +443,39 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
         const val FADE_S = 0.02
         const val UNVOICED_FILL_FRAMES = 4
         const val INTONATION_CENTER_HZ = 120.0
+    }
+}
+
+/**
+ * Realtime state carried from step to step: the excitation's phase (cycles) and the pitch already found.
+ *
+ * Pitch as the RVC realtime GUI does it: RMVPE runs only over the newest audio and the older frames are kept from
+ * earlier steps. The newest stretch is 32k - 1 frames long, so RMVPE pads nothing. Over the whole window (padded up to
+ * a multiple of 32 frames) the played frames matched whole-file pitch less often (94.5% vs 97.7% within 50 cents,
+ * voicing differing in 8.6% vs 2.8% of frames, on the PC) and cost about five times more.
+ */
+class StreamState(frames: Int, block: Int) {
+    var phase = 0.0
+    /** Raw RMVPE pitch (Hz, 0 = unvoiced) for every frame of the window, before any shaping. */
+    val f0 = DoubleArray(frames)
+    /** 16 kHz samples RMVPE gets each step. */
+    val samples = rmvpeSamples(block)
+
+    /** After skipping ahead (or restarting) the kept frames no longer line up: start over. */
+    fun reset() {
+        f0.fill(0.0)
+        phase = 0.0
+    }
+
+    fun advance(frames: Int) {
+        val n = min(frames, f0.size)
+        if (n <= 0) return
+        System.arraycopy(f0, n, f0, 0, f0.size - n)
+        f0.fill(0.0, f0.size - n, f0.size)
+    }
+
+    companion object {
+        fun rmvpeSamples(block: Int) = 5120 * ((block * 160 + 800 + 5119) / 5120) - 160
     }
 }
 
@@ -381,13 +552,21 @@ object Dsp {
     }
 
     /** SineGen's excitation with a float64 phase: a sine at f0 where voiced plus a little noise. */
-    fun nsfSource(f0: DoubleArray, rng: Random, upp: Int = 480, sineAmp: Double = 0.1, noiseStd: Double = 0.003): FloatArray {
+    fun nsfSource(f0: DoubleArray, rng: Random, upp: Int = 480, sineAmp: Double = 0.1, noiseStd: Double = 0.003): FloatArray =
+        nsfSource(f0, rng, 0.0, -1, upp, sineAmp, noiseStd).first
+
+    /** The same, starting from `startPhase` (in cycles); also returns the phase just before sample `markAt`, where
+     *  the next realtime window starts. */
+    fun nsfSource(f0: DoubleArray, rng: Random, startPhase: Double, markAt: Int, upp: Int = 480, sineAmp: Double = 0.1,
+                  noiseStd: Double = 0.003): Pair<FloatArray, Double> {
         val out = FloatArray(f0.size * upp)
-        var phase = 0.0
+        var phase = startPhase
+        var marked = startPhase
         var i = 0
         for (f in f0) {
             val step = f / 48000.0
             for (k in 0 until upp) {
+                if (i == markAt) marked = phase
                 phase += step
                 phase -= floor(phase)
                 val noise = rng.nextGaussian()
@@ -395,7 +574,29 @@ object Dsp {
                            else (sineAmp / 3 * noise).toFloat()
             }
         }
-        return out
+        if (markAt >= i) marked = phase
+        return out to marked
+    }
+
+    /** The best start for the next block within `search` samples: where its head lines up with `previous`, the tail
+     *  that is about to be cross-faded (normalised cross-correlation, as the RVC realtime GUI's SOLA). */
+    fun solaOffset(head: FloatArray, previous: FloatArray, search: Int): Int {
+        val n = previous.size
+        if (search <= 0 || head.size < n + search) return 0
+        var best = 0
+        var bestScore = Float.NEGATIVE_INFINITY
+        for (off in 0..search) {
+            var num = 0f
+            var den = 1e-8f
+            for (i in 0 until n) {
+                val v = head[off + i]
+                num += v * previous[i]
+                den += v * v
+            }
+            val score = num / sqrt(den)
+            if (score > bestScore) { bestScore = score; best = off }
+        }
+        return best
     }
 
     /** [channels, t] -> [channels, n] as F.interpolate(mode="linear", align_corners=False). */
@@ -440,6 +641,7 @@ object Dsp {
      *  is tabulated once per rate pair and read with linear interpolation. */
     fun resample(x: FloatArray, src: Int, dst: Int, zeros: Int = 24): FloatArray {
         if (src == dst || x.isEmpty()) return x
+        if (src % dst == 0) return decimate(x, src / dst, zeros)
         val ratio = dst.toDouble() / src
         val n = floor(x.size * ratio).toInt()
         val cutoff = min(1.0, ratio) * 0.95
@@ -460,6 +662,90 @@ object Dsp {
         }
         return out
     }
+
+    /** [resample] by a whole factor (48 -> 16 kHz): every output sits on an input sample, so the kernel is needed only at
+     *  whole distances and is worked out once; the same values as the general path, without its table lookups
+     *  (realtime resamples its whole window every step: ~25 ms a step on the S23+ before). */
+    private fun decimate(x: FloatArray, factor: Int, zeros: Int): FloatArray {
+        val cutoff = 0.95 / factor
+        val width = zeros / cutoff
+        val taps = taps(factor, zeros, cutoff, width)
+        val reach = taps.size - 1
+        val n = x.size / factor
+        val out = FloatArray(n)
+        for (i in 0 until n) {
+            val t = i * factor
+            var acc = 0.0
+            for (j in max(t - reach, 0)..min(t + reach, x.size - 1)) acc += x[j] * taps[abs(t - j)]
+            out[i] = acc.toFloat()
+        }
+        return out
+    }
+
+    private val tapSets = HashMap<Int, DoubleArray>()
+
+    @Synchronized
+    private fun taps(factor: Int, zeros: Int, cutoff: Double, width: Double): DoubleArray = tapSets.getOrPut(factor * 1000 + zeros) {
+        val table = kernel(cutoff, width)
+        val steps = (table.size - 1) / width
+        DoubleArray(floor(width).toInt() + 1) { d ->
+            val pos = d * steps
+            val k = pos.toInt()
+            if (k + 1 < table.size) table[k] + (table[k + 1] - table[k]) * (pos - k) else table[table.size - 1]
+        }
+    }
+
+    /** [resample] for a length that repeats (realtime's formant step: the same input size every step): the weights of
+     *  every output are worked out on the first call and kept for the next ones with the same rates and size. */
+    fun resampleRepeated(x: FloatArray, src: Int, dst: Int): FloatArray {
+        if (src == dst || x.isEmpty()) return x
+        val p = synchronized(this) {
+            plan?.takeIf { it.src == src && it.dst == dst && it.size == x.size } ?: Plan(src, dst, x.size).also { plan = it }
+        }
+        val out = FloatArray(p.first.size)
+        for (i in out.indices) {
+            var acc = 0.0
+            val a = p.first[i]
+            val base = i * p.taps
+            for (k in 0 until p.count[i]) acc += x[a + k] * p.w[base + k]
+            out[i] = acc.toFloat()
+        }
+        return out
+    }
+
+    private class Plan(val src: Int, val dst: Int, val size: Int, zeros: Int = 24) {
+        val first: IntArray
+        val count: IntArray
+        val taps: Int
+        val w: FloatArray
+
+        init {
+            val ratio = dst.toDouble() / src
+            val n = floor(size * ratio).toInt()
+            val cutoff = min(1.0, ratio) * 0.95
+            val width = zeros / cutoff
+            val table = kernel(cutoff, width)
+            val steps = (table.size - 1) / width
+            taps = 2 * ceil(width).toInt() + 2
+            first = IntArray(n)
+            count = IntArray(n)
+            w = FloatArray(n * taps)
+            for (i in 0 until n) {
+                val t = i / ratio
+                val a = max(ceil(t - width).toInt(), 0)
+                val b = min(floor(t + width).toInt(), size - 1)
+                first[i] = a
+                count[i] = max(0, b - a + 1)
+                for (j in a..b) {
+                    val pos = abs(t - j) * steps
+                    val k = pos.toInt()
+                    w[i * taps + j - a] = (if (k + 1 < table.size) table[k] + (table[k + 1] - table[k]) * (pos - k) else table[table.size - 1]).toFloat()
+                }
+            }
+        }
+    }
+
+    private var plan: Plan? = null
 
     private val kernels = HashMap<Pair<Double, Double>, DoubleArray>()
 

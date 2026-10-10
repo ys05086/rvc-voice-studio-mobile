@@ -11,6 +11,11 @@ which do not: they stay 32-bit on the GPU). Measured on the PC, 16 bits up to th
 0.07-0.17 dB, the last stage alone by 0.6-0.8 dB and the output layer alone by 3.4 dB.
 Only RVC v2 models at 48 kHz with pitch (f0) work for now; v1, 40k/32k and no-pitch models are refused.
 
+For Android's NPU it also makes NAME.dec.w8a16.onnx: the decoder with 8-bit weights and 16-bit activations, which
+sounds like the 32-bit decoder at the NPU's speed (the app uses it when it is there). That needs a few minutes of
+recordings to calibrate on: WAV files in calib/ next to this script (or --calib); without them it is skipped.
+--common also writes hubert.htp.onnx, HuBERT as Android's NPU takes it whole (GELUs fused).
+
 The shared models (the app can also download these itself) are built from the original weights, downloaded once
 into downloads/ and checked against their SHA-256: ContentVec (huggingface.co/lengyue233/content-vec-best) and
 RMVPE (huggingface.co/lj1995/VoiceConversionWebUI), both MIT.
@@ -23,6 +28,7 @@ Every export is checked against PyTorch on random input.
   NAME.dec.onnx    z [1, 192, n], NSF excitation [1, n * 480, 1] -> 48 kHz audio [1, 1, n * 480]
   NAME.dec_a.onnx  z [1, 192, n], NSF excitation [1, n * 480, 1] -> hidden [1, 64, n * 240]
   NAME.dec_b.onnx  hidden [1, 64, n * 240], NSF excitation [1, n * 480, 1] -> 48 kHz audio [1, 1, n * 480]
+  NAME.dec.w8a16.onnx  as NAME.dec.onnx, quantized (QDQ) for the Snapdragon NPU
 """
 import argparse
 import hashlib
@@ -227,7 +233,7 @@ class Decoder(torch.nn.Module):
 
     def forward(self, z, sine):
         dec = self.net_g.dec
-        g = self.net_g.emb_g(torch.zeros(1, dtype=torch.long)).unsqueeze(-1)
+        g = self.net_g.emb_g(torch.zeros(1, dtype=torch.long, device=z.device)).unsqueeze(-1)
         har_source = dec.m_source.l_tanh(dec.m_source.l_linear(sine)).transpose(1, 2)
         x = dec.conv_pre(z) + dec.cond(g)
         for i, (ups, noise_convs) in enumerate(zip(dec.ups, dec.noise_convs)):
@@ -364,6 +370,22 @@ def export_split(out, name, net_g, z, sine):
         check(f"{name}.dec_a + dec_b vs dec", whole, path_b, {"hidden": hidden, "sine": sine}, 1e-4)
 
 
+def npu_decoder(args, folder, name, dec):
+    """NAME.dec.w8a16.onnx, calibrated on the recordings; HuBERT and RMVPE come from out/common (made if missing)."""
+    import npu_export
+    if not npu_export.audio_files(args.calib):
+        print("\nno NPU decoder: put a few minutes of voice recordings (WAV) into "
+              f"{Path(args.calib[0])} and convert again (Android's NPU then sounds like the 32-bit decoder)")
+        return
+    common = args.out / "common"
+    if not ((common / "hubert.onnx").is_file() and (common / "rmvpe.onnx").is_file()):
+        print("\nthe NPU decoder's calibration needs HuBERT and RMVPE: building the shared models first", flush=True)
+        common.mkdir(exist_ok=True)
+        export_hubert(common)
+        export_rmvpe(common)
+    npu_export.export(dec, folder / f"{name}.enc.onnx", common, args.calib)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("voice", nargs="?", type=Path, help="RVC v2 48 kHz voice model (.pth)")
@@ -371,18 +393,27 @@ def main():
     parser.add_argument("--out", type=Path, default=HERE / "out", help="output folder (default: out/ next to this script)")
     parser.add_argument("--common", action="store_true", help="also (or only) build hubert.onnx and rmvpe.onnx")
     parser.add_argument("--no-ncnn", action="store_true", help="skip the Android GPU decoder")
+    parser.add_argument("--calib", nargs="+", default=[str(HERE / "calib")],
+                        help="recordings (WAV files or folders) to calibrate the NPU decoder on (default: calib/)")
+    parser.add_argument("--no-npu", action="store_true", help="skip the NPU decoder (NAME.dec.w8a16.onnx)")
     args = parser.parse_args()
     if not args.voice and not args.common:
         parser.error("give a voice model (.pth), --common, or both")
     sys.path.insert(0, str(HERE))
     torch.manual_seed(0)
     args.out.mkdir(parents=True, exist_ok=True)
+    # scratch files (pnnx, quantization: up to a few GB) next to the output, not on the system drive, which may be full
+    import tempfile
+    tempfile.tempdir = str(args.out / "tmp")
+    Path(tempfile.tempdir).mkdir(exist_ok=True)
     if args.common:
         common = args.out / "common"
         common.mkdir(exist_ok=True)
         export_hubert(common)
         export_rmvpe(common)
-        print(f"\nshared models: {common} (put hubert.onnx and rmvpe.onnx into the app's common folder)")
+        from htp_export import fuse
+        fuse(common / "hubert.onnx", common / "hubert.htp.onnx")
+        print(f"\nshared models: {common} (put hubert.onnx, hubert.htp.onnx and rmvpe.onnx into the app's common folder)")
     if args.voice:
         name = args.name or args.voice.stem
         folder = args.out / name
@@ -395,6 +426,8 @@ def main():
                 convert(dec)
             except FileNotFoundError as e:
                 print(f"no Android GPU decoder ({e}); the app then decodes on the CPU. pip install pnnx to make it.")
+        if not args.no_npu:
+            npu_decoder(args, folder, name, dec)
         archive = args.out / f"{name}.zip"
         with zipfile.ZipFile(archive, "w", zipfile.ZIP_STORED) as z:
             for f in sorted(folder.iterdir()):

@@ -8,6 +8,7 @@ import java.nio.ByteOrder
 import java.util.Random
 import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.sin
 
 /** The Kotlin port against golden vectors written by phone-vc/make_golden.py from pipeline.py. */
 class DspTest {
@@ -60,6 +61,47 @@ class DspTest {
     @Test fun excitationPhase() {
         val sine = Dsp.nsfSource(golden("glide"), Random(0), noiseStd = 0.0).map { it.toDouble() }.toDoubleArray()
         assertClose(golden("sine"), sine, 1e-5, "sine")
+    }
+
+    @Test fun excitationCarriesPhaseAcrossWindows() {
+        // realtime: two windows that overlap, the second starting `advance` frames into the first, continue the sine
+        // exactly where one long window would be (noise off, so only the phase matters)
+        val f0 = golden("glide")  // 40 voiced frames
+        val advance = 25
+        val (first, phase) = Dsp.nsfSource(f0, Random(0), 0.0, advance * 480, noiseStd = 0.0)
+        val (second, _) = Dsp.nsfSource(f0.copyOfRange(advance, f0.size), Random(0), phase, -1, noiseStd = 0.0)
+        for (i in 0 until (f0.size - advance) * 480) assertEquals("sample $i", first[advance * 480 + i], second[i], 1e-5f)
+    }
+
+    @Test fun solaFindsTheShift() {
+        val previous = FloatArray(960) { sin(it * 0.05).toFloat() }
+        val head = FloatArray(960 + 480) { sin((it - 123) * 0.05).toFloat() }
+        assertEquals(123, Dsp.solaOffset(head, previous, 480))
+    }
+
+    @Test fun pitchCacheShiftsWithTheWindow() {
+        val s = StreamState(10, 3)
+        for (i in 0 until 10) s.f0[i] = i.toDouble()
+        s.advance(3)
+        assertEquals(listOf(3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 0.0, 0.0, 0.0), s.f0.toList())
+        assertEquals(4960, StreamState.rmvpeSamples(20))  // 32 * 5 frames - 1: RMVPE pads nothing
+    }
+
+    @Test fun fastResamplersMatchTheGeneralOne() {
+        val rng = Random(3)
+        val x = FloatArray(48000) { (rng.nextGaussian() * 0.2).toFloat() }
+        // the whole-factor shortcut (48 -> 16 kHz) against the general weights, worked out by the cached plan
+        val fast = Dsp.resample(x, 48000, 16000)
+        val general = Dsp.resampleRepeated(x, 48000, 16000)
+        assertEquals(general.size, fast.size)
+        for (i in fast.indices) assertEquals("sample $i", general[i], fast[i], 1e-5f)
+        // the cached plan (realtime's formant step) against the general path, twice (the second from the cache)
+        val y = x.copyOf(466 * 50)
+        val once = Dsp.resample(y, 466, 480)
+        for (round in 0 until 2) {
+            val cached = Dsp.resampleRepeated(y, 466, 480)
+            for (i in once.indices) assertEquals("sample $i", once[i], cached[i], 1e-5f)
+        }
     }
 
     @Test fun resamplesCleanly() {

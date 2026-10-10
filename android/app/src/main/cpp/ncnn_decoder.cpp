@@ -1,7 +1,10 @@
 // JNI wrapper for NcnnDecoder.kt: the voice decoder on ncnn, on the GPU through Vulkan in 32 bits.
 #include <jni.h>
 
+#include <fstream>
 #include <mutex>
+#include <sstream>
+#include <string>
 #include <vector>
 
 #include "gpu.h"
@@ -37,7 +40,18 @@ Java_com_voicestudio_phone_NcnnDecoder_nativeCreate(JNIEnv* env, jclass, jstring
     opt.num_threads = threads;
     const char* p = env->GetStringUTFChars(param, nullptr);
     const char* m = env->GetStringUTFChars(model, nullptr);
-    const bool bad = d->net.load_param(p) != 0 || d->net.load_model(m) != 0;
+    // The graph's input reshape names the piece length make_ncnn.py converted at (200 frames). Everything after it
+    // is convolutions, so -1 there lets one graph take any length (realtime decodes ~50 frames a step).
+    std::stringstream text;
+    text << std::ifstream(p).rdbuf();
+    std::string graph = text.str();
+    const std::string mark = " in0 in0r 0=";
+    const size_t at = graph.find(mark);
+    if (at != std::string::npos) {
+        const size_t from = at + mark.size();
+        graph.replace(from, graph.find(' ', from) - from, "-1");
+    }
+    const bool bad = graph.empty() || d->net.load_param_mem(graph.c_str()) != 0 || d->net.load_model(m) != 0;
     env->ReleaseStringUTFChars(param, p);
     env->ReleaseStringUTFChars(model, m);
     if (bad) {
