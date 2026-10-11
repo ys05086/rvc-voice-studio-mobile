@@ -59,6 +59,12 @@ class MainActivity : Activity() {
     private val modelsDir by lazy { File(base, "models") }
     private val recordingsDir by lazy { File(base, "recordings") }
     private val prefs by lazy { getSharedPreferences("phone", MODE_PRIVATE) }
+    private val computePolicy by lazy {
+        ComputePolicy.from(
+            if (android.os.Build.VERSION.SDK_INT >= 31) android.os.Build.SOC_MANUFACTURER else "",
+            android.os.Build.HARDWARE, android.os.Build.BOARD,
+            packageManager.hasSystemFeature(PackageManager.FEATURE_VULKAN_HARDWARE_LEVEL))
+    }
     /** The test hooks' extras (`adb shell am start ... --es convert ...`): only when files/debug_hooks exists, since
      *  the launcher activity takes intents from any app. Otherwise an empty intent, so every hook reads its default. */
     private val hooks: Intent by lazy { if (File(base, "debug_hooks").isFile) intent else Intent() }
@@ -611,7 +617,7 @@ class MainActivity : Activity() {
                     engine = null
                     LiveSession.release()
                     val chunk = hooks.getIntExtra("chunk_s", 3) * Rvc.SR16  // test hook: --ei chunk_s N
-                    engine = Rvc(commonDir, dir, threads, ep, dec, front, chunk, seed = seed.toLong(), cpuFixedWindows = fixedWindows)
+                    engine = Rvc(commonDir, dir, threads, ep, dec, front, chunk, seed = seed.toLong(), cpuFixedWindows = fixedWindows, allowFallback = !hooked)
                     engineKey = key
                 }
                 val loaded = System.currentTimeMillis()
@@ -639,7 +645,8 @@ class MainActivity : Activity() {
         outWave.position = f<WaveformView>(R.id.in_wave).position
         f<TextView>(R.id.out_title).text = "변환 결과 · $model"
         f<TextView>(R.id.out_info).text = String.format(Locale.US, "%.1f초 분량을 %.1f초에 변환 · %s%s", samples.toFloat() / Rvc.SR, took,
-            "앞 단계 " + (if (engineKey.split("|").getOrNull(4)?.startsWith("qnn") == true) "NPU" else "CPU") + " · 디코더 " + (engine?.decoderDevice ?: "CPU"),
+            "앞 단계 ${engine?.frontDevice ?: "CPU"} · 디코더 ${engine?.decoderDevice ?: "CPU"}" +
+                (engine?.fallbackNotice?.let { " · $it" } ?: ""),
             if (load > 0.5) String.format(Locale.US, " · 모델 불러오기 %.0f초", load) else "")
         f<View>(R.id.result).visibility = View.VISIBLE
         showTimes()
@@ -823,17 +830,23 @@ class MainActivity : Activity() {
 
     // ---------------------------------------------------------------- settings
 
-    /** Where file conversion runs, from 설정 › 계산 장치: the front ("cpu" / "qnn_htp"), the decoder's runtime and its
-     *  file, and how to say it. 추천 = the NPU throughout, with the integer decoder when the voice has it (it sounds
-     *  like 32-bit; the 16-bit float one does not), else the GPU in 32 bits. */
+    /** Shared file/live preference. Device hints avoid unsupported accelerators; Rvc verifies by running them. */
     private class Devices(val front: String, val ep: String, val file: String, val label: String)
 
     private fun fileDevices(dir: File): Devices {
         val hasInt = File(dir, W8A16).isFile
-        val (front, dec) = when (prefs.getString("compute", "recommended")) {
+        val hasGpu = computePolicy.tryGpu && File(dir, "model.dec.ncnn.param").isFile && File(dir, "model.dec.ncnn.bin").isFile
+        val (requestedFront, requestedDec) = when (prefs.getString("compute", "recommended")) {
             "full32" -> "cpu" to "gpu"
             "custom" -> prefs.getString("custom_front", "npu")!! to prefs.getString("custom_dec", "npu_int")!!
-            else -> "npu" to if (hasInt) "npu_int" else "gpu"
+            else -> (if (computePolicy.tryNpu) "npu" else "cpu") to computePolicy.decoder(hasInt, hasGpu)
+        }
+        val front = if (requestedFront == "npu" && !computePolicy.tryNpu) "cpu" else requestedFront
+        val dec = when {
+            requestedDec.startsWith("npu") && !computePolicy.tryNpu -> if (hasGpu) "gpu" else "cpu"
+            requestedDec == "npu_int" && !hasInt -> if (hasGpu) "gpu" else "cpu"
+            requestedDec == "gpu" && !hasGpu -> "cpu"
+            else -> requestedDec
         }
         val f = if (front == "npu") "qnn_htp" else "cpu"
         val frontLabel = "앞 단계 " + if (front == "npu") "NPU" else "CPU"
@@ -844,6 +857,13 @@ class MainActivity : Activity() {
             else -> Devices(f, "ncnn_gpu", "model.dec.onnx", "$frontLabel · 디코더 GPU 32비트" +
                 if (dec == "npu_int") " (이 목소리엔 NPU 정수 디코더 파일이 없어요)" else "")
         }
+    }
+
+    private fun liveDevices(dir: File): Devices {
+        val selected = fileDevices(dir)
+        return if (prefs.getBoolean("live_split", false) && computePolicy.tryNpu && selected.front == "qnn_htp")
+            Devices(selected.front, "split", "model.dec.onnx", "앞 단계 NPU · 디코더 NPU+CPU")
+        else selected
     }
 
     private val computeViews = HashMap<String, View>()
@@ -936,9 +956,9 @@ class MainActivity : Activity() {
         for ((views, selected) in segments) views.forEach { it.isSelected = it.tag == selected() }
         val preset = prefs.getString("compute", "recommended")
         (computeViews["hint"] as? TextView)?.text = when (preset) {
-            "full32" -> "앞 단계는 CPU, 디코더는 GPU, 전부 32비트. 느리지만 기준이 되는 소리예요 (15초에 13초쯤)"
-            "custom" -> "앞 단계와 디코더를 따로 골라요. NPU 16비트 디코더는 비교용이에요 (잡음이 끼어요)"
-            else -> "가장 빠르면서 32비트와 같은 소리: 전부 NPU, 디코더는 정수(8·16비트). 정수 디코더가 없는 목소리는 GPU 32비트로 (15초에 7초쯤)"
+            "full32" -> "앞 단계는 CPU, 디코더는 GPU 또는 CPU에서 32비트로 계산해요. 속도는 기기마다 달라요."
+            "custom" -> "파일·실시간의 계산 장치를 골라요. 사용할 수 없는 가속기는 CPU로 전환해요. NPU 16비트는 비교용이에요."
+            else -> "기기에 맞춰 NPU, GPU 또는 CPU를 사용해요. 가속기를 실행하지 못하면 CPU로 전환해요. 실시간 속도는 기기마다 달라요."
         }
         computeViews["custom"]?.visibility = if (preset == "custom") View.VISIBLE else View.GONE
         (computeViews["now"] as? TextView)?.text = currentModel()?.let { "지금 목소리 ${it.name}: ${fileDevices(it).label}" } ?: ""
@@ -1070,17 +1090,6 @@ class MainActivity : Activity() {
         liveBars["formant"]?.progress = ((num("formant") + 2) * 10).roundToInt()
     }
 
-    /** The decoder file realtime runs on the NPU: the integer one (8-bit weights, 16-bit activations; converter
-     *  converter/npu_export.py) when the voice has it. On the S23+ it sounds like the 32-bit decoder (spectrum 0.14 dB
-     *  apart, the floating 16-bit one 1.21 dB) for ~20% more decoder time. A test hook's --es dec wins. */
-    private fun liveDecoderFile(dir: File, ep: String): String = when {
-        decFile != "model.dec.onnx" -> decFile
-        ep != "qnn_htp" -> "model.dec.onnx"
-        prefs.getString("compute", "recommended") == "custom" && prefs.getString("custom_dec", "npu_int") == "npu16" -> "model.dec.onnx"
-        File(dir, W8A16).isFile -> W8A16
-        else -> "model.dec.onnx"
-    }
-
     private fun toggleLive() {
         if (LiveSession.engine != null) { stopLive(); return }
         if (livePreparing) return
@@ -1098,9 +1107,10 @@ class MainActivity : Activity() {
         if (busy) { toast("변환이 끝나면 켜세요"); return }
         player.stop()
         val params = liveParams()
-        val ep = if (prefs.getBoolean("live_split", false)) "split" else "qnn_htp"
-        val liveDec = liveDecoderFile(dir, ep)
-        val front = "qnn_htp"  // the CPU alone takes ~0.23 s a step for the front (S23+), more than a 0.2 s block
+        val devices = liveDevices(dir)
+        val ep = devices.ep
+        val liveDec = if (decFile != "model.dec.onnx") decFile else devices.file
+        val front = devices.front
         val threads = prefs.getInt("threads", 4)
         val speaker = prefs.getBoolean("live_speaker", false)
         val bypass = prefs.getBoolean("live_bypass", false)
@@ -1119,8 +1129,8 @@ class MainActivity : Activity() {
                     LiveSession.rvc?.close()
                     LiveSession.rvc = null
                     LiveSession.rvcKey = ""
-                    liveMessage = "모델 준비 중… (처음 쓰는 블록·디코더는 NPU 준비로 30초쯤 걸려요)"
-                    LiveSession.rvc = Rvc(commonDir, dir, threads, ep, liveDec, front, live = Rvc.LiveShape(params.block, params.tail))
+                    liveMessage = "모델 준비 중… 처음 실행할 때는 시간이 걸릴 수 있어요."
+                    LiveSession.rvc = Rvc(commonDir, dir, threads, ep, liveDec, front, live = Rvc.LiveShape(params.block, params.tail), allowFallback = true)
                     LiveSession.rvcKey = key
                 }
                 val e = LiveEngine(applicationContext, LiveSession.rvc!!, params, settings, speaker, bypass, base)
@@ -1215,12 +1225,11 @@ class MainActivity : Activity() {
         }
         val s = e?.snapshot() ?: lastLive
         val params = liveParams()
-        val decoder = when {
-            prefs.getBoolean("live_split", false) -> "분할 (NPU+CPU)"
-            currentModel()?.let { liveDecoderFile(it, "qnn_htp") } == W8A16 -> "NPU 정수 (8·16비트)"
-            else -> "NPU 16비트"
-        }
-        f<TextView>(R.id.live_device).text = "${currentModel()?.name ?: "모델 없음"} · 앞 단계 NPU · 디코더 $decoder · " +
+        val selected = currentModel()?.let { liveDevices(it) }
+        val active = LiveSession.rvc?.takeIf { e != null }
+        val deviceLabel = active?.let { "앞 단계 ${it.frontDevice} · 디코더 ${it.decoderDevice}" }
+            ?: selected?.label ?: "계산 장치 자동 선택"
+        f<TextView>(R.id.live_device).text = "${currentModel()?.name ?: "모델 없음"} · $deviceLabel · " +
             String.format(Locale.US, "블록 %.2f초", params.block / 100.0) +
             (if (prefs.getBoolean("live_bypass", false)) " · 통과(진단)" else "") +
             (s?.output?.takeIf { it.isNotEmpty() }?.let { "\n출력: $it" } ?: "") + "\n위: 마이크 · 아래: 바뀐 목소리"
@@ -1248,6 +1257,9 @@ class MainActivity : Activity() {
             stats.setTextColor(getColor(if (load > 1 || s.drops > 0) R.color.rec else R.color.text))
         } else stats.text = ""
         f<TextView>(R.id.live_info).text = liveMessage ?: when {
+            e != null && s != null && s.steps >= 3 && s.compute > s.block ->
+                "현재 계산 속도가 실시간을 따라가지 못해요. 블록을 늘리거나 파일 변환을 이용하세요."
+            e != null && active?.fallbackNotice != null -> active.fallbackNotice
             e != null -> "화면을 꺼도 계속 돌아요. 알림의 \"끄기\"로도 멈출 수 있어요."
             else -> "이어폰을 끼고 켜세요. 이어폰이 없으면 통화 스피커(귀에 대는 곳)로 나와요."
         }

@@ -38,7 +38,8 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
           /** The NPU's fixed windows even on the CPU: a control for comparing the two with everything else equal. */
           cpuFixedWindows: Boolean = false,
           /** Diagnosis: ORT profiles of the NPU sessions (which device ran each node) go here as <model>_*.json. */
-          private val profileDir: File? = null) : AutoCloseable {
+          private val profileDir: File? = null,
+          private val allowFallback: Boolean = false) : AutoCloseable {
     /** A realtime step: [block] new frames, the last [tail] frames of the window decoded (block + crossfade + search). */
     data class LiveShape(val block: Int, val tail: Int)
 
@@ -52,114 +53,135 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
     )
 
     private val env = OrtEnvironment.getEnvironment()
-    private fun options(accelerate: Boolean) = OrtSession.SessionOptions().apply {
-        setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-        setIntraOpNumThreads(threads)
-        if (accelerate) when (ep) {
-            "xnnpack" -> addXnnpack(mapOf("intra_op_num_threads" to threads.toString()))
-            "nnapi" -> addNnapi()
-            "nnapi16" -> addNnapi(java.util.EnumSet.of(ai.onnxruntime.providers.NNAPIFlags.USE_FP16))
-            else -> qnnOptions(ep)?.let { addQnn(it) }
-        }
+    private val owned = ArrayList<AutoCloseable>()
+    private val notices = java.util.concurrent.CopyOnWriteArrayList<String>()
+    val fallbackNotice: String? get() = notices.takeIf { it.isNotEmpty() }?.joinToString(" · ")
+    private fun note(stage: String, failure: Throwable) {
+        notices.add("$stage CPU로 전환")
+        android.util.Log.w("VoiceStudio", "$stage accelerator unavailable; using CPU", failure)
     }
-    private val options = options(false)
-    /** "ncnn_gpu": the decoder on the GPU through Vulkan in 32 bits (model.dec.ncnn.*, made by make_ncnn.py);
-     *  null when the files are missing or the GPU cannot start, and the decoder falls back to the CPU. */
-    private val ncnn: NcnnDecoder? = if (ep != "ncnn_gpu") null else runCatching {
-        NcnnDecoder(File(modelDir, "model.dec.ncnn.param"), File(modelDir, "model.dec.ncnn.bin"), true, threads)
-            .takeIf { it.usesGpu } ?: throw IllegalStateException("no Vulkan GPU")
-    }.getOrNull()
-    /** "split": the decoder's first three upsampling stages (88% of its work, which survive 16 bits on the PC) on the
-     *  NPU, the last stage with the output layer (which does not) on the CPU in 32 bits, from model.dec_a/dec_b.onnx
-     *  (made by the converter). Without those files the whole decoder runs on the CPU. */
-    private val split = ep == "split" && File(modelDir, "model.dec_a.onnx").isFile && File(modelDir, "model.dec_b.onnx").isFile
-    /** Where the decoder runs, for the result line: "GPU", "NPU", "NPU+CPU" or "CPU". */
-    val decoderDevice = when {
-        ncnn != null -> "GPU"; split -> "NPU+CPU"
-        qnnOptions(ep) != null -> if ("w8a16" in decFile) "NPU 정수" else "NPU 16비트"
-        else -> "CPU"
-    }
-    /** QNN and the ncnn graph need fixed shapes: the decoder then runs in DEC_FRAMES pieces (see [decode]). */
-    private val decFixed = qnnOptions(ep) != null || ncnn != null || split
-    /** Frames per decoder run: DEC_FRAMES pieces for files; realtime decodes the tail and its left context, sized for
-     *  the highest formant so the shape never changes while the slider moves (a lower formant takes more context). */
-    val decFrames = if (live == null) DEC_FRAMES else ceil((live.tail + LIVE_DEC_CONTEXT) * MAX_FORMANT_FACTOR).toInt()
-    private val decOptions = options(true).apply {
-        if (decFixed) {
-            setSymbolicDimensionValue("n", decFrames.toLong())
-            setSymbolicDimensionValue("samples", decFrames * 480L)
-        }
-    }
-    /** Seconds spent per stage since the engine was made: hubert, rmvpe, enc, dec, other. */
-    val timing = DoubleArray(5)
-    /** HuBERT, RMVPE and enc on the NPU ("qnn_htp"): fp16 is fine for features, unlike for the decoder that makes
-     *  the waveform. QNN needs fixed shapes, so every window is exactly [window] samples (see [convert]). */
+    private fun <T : AutoCloseable> own(value: T): T = value.also { owned.add(it) }
     private val frontFixed = qnnOptions(front) != null
-    private val fixedWindows = frontFixed || cpuFixedWindows
-    private fun frontSession(src: File, cache: File, dims: Map<String, Long>): OrtSession =
-        if (!frontFixed) env.createSession(src.path, options) else npuSession(src, cache, qnnOptions(front)!!, dims)
-    /** A model on the NPU with fixed shapes; its compiled graph is kept in `cache`, so later starts skip the long
-     *  preparation (a cache that no longer loads is made again). */
-    private fun npuSession(src: File, cache: File, qnn: Map<String, String>, dims: Map<String, Long>): OrtSession {
-        val profile = profileDir?.let { File(it, cache.nameWithoutExtension).path }
-        cache.takeIf { it.isFile }?.let { c ->
-            runCatching { return env.createSession(c.path, npuOptions(qnn, dims, null, profile)).also { profiled += it } }
-                .onFailure { c.delete() }
-        }
-        return env.createSession(src.path, npuOptions(qnn, dims, cache, profile)).also { profiled += it }
-    }
-    private val profiled = ArrayList<OrtSession>()
-    private fun npuOptions(qnn: Map<String, String>, dims: Map<String, Long>, saveTo: File?, profile: String?) = OrtSession.SessionOptions().apply {
-        setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-        setIntraOpNumThreads(threads)
-        if (profile != null) enableProfiling(profile)
-        addQnn(qnn)
-        for ((name, value) in dims) setSymbolicDimensionValue(name, value)
-        if (saveTo != null) {  // the NPU's compiled graph, so later starts skip the long preparation
-            addConfigEntry("ep.context_enable", "1")
-            addConfigEntry("ep.context_embed_mode", "1")
-            addConfigEntry("ep.context_file_path", saveTo.path)
-        }
-    }
-    /** The NPU's fixed window at 16 kHz: a chunk, the cross-fade and a second of context each side. */
+    // CPU fallback keeps bounded windows, including during file conversion on low-memory devices.
+    private val fixedWindows = frontFixed || cpuFixedWindows || allowFallback
+    private val split = ep == "split" && File(modelDir, "model.dec_a.onnx").isFile && File(modelDir, "model.dec_b.onnx").isFile
+    private val decFixed = qnnOptions(ep) != null || ep == "ncnn_gpu" || split || allowFallback
+    val decFrames = if (live == null) DEC_FRAMES else ceil((live.tail + LIVE_DEC_CONTEXT) * MAX_FORMANT_FACTOR).toInt()
+    val timing = DoubleArray(5)
     val window = frontChunk + 320 + 2 * 16000
-    /** Realtime with the front on the NPU: the window every step's HuBERT and enc see, in 10 ms frames (the context is
-     *  what the block, crossfade and search leave of it); null when any length goes (the CPU) or for files. */
     val realtimeWindow: Int? = if (live != null && fixedWindows) REALTIME_WINDOW else null
     private val frames = realtimeWindow ?: (window / 160)
     private val hubertSamples = realtimeWindow?.let { it * 160 } ?: window
-    /** realtime RMVPE sees only the newest audio ([StreamState.samples]); files the whole window */
     private val rmvpeSamples = if (live != null) StreamState.rmvpeSamples(live.block) else window
-    /** On the NPU, HuBERT with its GELUs fused into single nodes when the converter made that file (htp_export.py):
-     *  QNN has no Erf on the HTP, so the plain file ran 20 of its nodes on the CPU in between 21 NPU pieces. */
-    private val hubertFile = File(commonDir, "hubert.htp.onnx").takeIf { frontFixed && it.isFile } ?: File(commonDir, "hubert.onnx")
-    private val hubert = frontSession(hubertFile, File(commonDir, "${hubertFile.nameWithoutExtension}.$front.$hubertSamples.onnx"), mapOf("samples" to hubertSamples.toLong()))
-    private val rmvpe = frontSession(File(commonDir, "rmvpe.onnx"), File(commonDir, "rmvpe.$front.$rmvpeSamples.onnx"), mapOf("samples" to rmvpeSamples.toLong()))
-    private val enc = frontSession(File(modelDir, "model.enc.onnx"), File(modelDir, "model.enc.$front.$frames.onnx"), mapOf("T" to frames.toLong()))
-    /** The NPU's compiled decoder, saved after the first preparation (~12 s) and loaded directly after that. */
-    /** Named after the decoder file (model.dec.onnx -> model.dec.qnn_htp[.nN].onnx), so a quantized variant
-     *  (model.dec.w8a16.onnx) gets its own. */
-    val compiledDecoder = File(modelDir, decFile.removeSuffix(".onnx") + if (decFrames == DEC_FRAMES) ".$ep.onnx" else ".$ep.n$decFrames.onnx")
-    private val decA: OrtSession? = if (!split) null else npuSession(File(modelDir, "model.dec_a.onnx"),
-        File(modelDir, "model.dec_a.qnn_htp.n$decFrames.onnx"), qnnOptions("qnn_htp")!!,
-        mapOf("n" to decFrames.toLong(), "samples" to decFrames * 480L))
-    private val decB: OrtSession? = if (!split) null else env.createSession(File(modelDir, "model.dec_b.onnx").path, options)
-    private val dec: OrtSession? = if (ncnn != null || split) null else if (qnnOptions(ep) == null) env.createSession(File(modelDir, decFile).path, decOptions) else
-        compiledDecoder.takeIf { it.isFile }?.let { cached ->
-            runCatching { env.createSession(cached.path, options(true)) }.getOrElse { cached.delete(); null }
-        } ?: run {
-            decOptions.addConfigEntry("ep.context_enable", "1")
-            decOptions.addConfigEntry("ep.context_embed_mode", "1")
-            decOptions.addConfigEntry("ep.context_file_path", compiledDecoder.path)
-            env.createSession(File(modelDir, decFile).path, decOptions)
+    private val decoderDims get() = if (decFixed) mapOf("n" to decFrames.toLong(), "samples" to decFrames * 480L) else emptyMap()
+
+    private inner class ModelSession(val name: String, src: File, cpuSrc: File, val backend: String,
+                                     private val cache: File?, private val dims: Map<String, Long>) : AutoCloseable {
+        private val accelerated = backend != "cpu"
+        private fun load(file: File, device: String, cached: Boolean = false): OrtSession =
+            OrtSession.SessionOptions().use { options ->
+                options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+                options.setIntraOpNumThreads(threads)
+                dims.forEach { (key, value) -> options.setSymbolicDimensionValue(key, value) }
+                when (device) {
+                    "xnnpack" -> options.addXnnpack(mapOf("intra_op_num_threads" to threads.toString()))
+                    "nnapi" -> options.addNnapi()
+                    "nnapi16" -> options.addNnapi(java.util.EnumSet.of(ai.onnxruntime.providers.NNAPIFlags.USE_FP16))
+                    else -> qnnOptions(device)?.let {
+                        options.addQnn(it)
+                        // App compatibility mode must not claim NPU when ORT silently used CPU.
+                        if (allowFallback) options.addConfigEntry("session.disable_cpu_ep_fallback", "1")
+                        if (!cached && cache != null) {
+                            options.addConfigEntry("ep.context_enable", "1")
+                            options.addConfigEntry("ep.context_embed_mode", "1")
+                            options.addConfigEntry("ep.context_file_path", cache.path)
+                        }
+                    }
+                }
+                profileDir?.let { options.enableProfiling(File(it, "$name-$device").path) }
+                env.createSession(file.path, options)
+            }
+        private val resource = BackendFallback(
+            primary = {
+                if (cache?.isFile == true) {
+                    try { load(cache, backend, true) } catch (failure: Throwable) {
+                        if (!BackendFallback.recoverable(failure)) throw failure
+                        cache.delete()
+                        load(src, backend)
+                    }
+                } else load(src, backend)
+            },
+            fallback = if (allowFallback && accelerated) ({ load(cpuSrc, "cpu") }) else null,
+            onFallback = { note(name, it) },
+        )
+        val device: String get() = if (resource.usingFallback || !accelerated) "CPU" else "NPU"
+        fun run(inputs: Map<String, OnnxTensor>): OrtSession.Result = resource.run { it.run(inputs) }
+        override fun close() = resource.close()
+    }
+
+    private val hubert: ModelSession
+    private val rmvpe: ModelSession
+    private val enc: ModelSession
+    private val decA: ModelSession?
+    private val decB: ModelSession?
+    @Volatile private var ncnn: NcnnDecoder? = null
+    private var dec: ModelSession? = null
+    private fun cpuDecoder() = own(ModelSession("디코더", File(modelDir, "model.dec.onnx"),
+        File(modelDir, "model.dec.onnx"), "cpu", null, decoderDims))
+    val frontDevice: String get() = listOf(hubert.device, rmvpe.device, enc.device).distinct().joinToString("+")
+    val decoderDevice: String get() = when {
+        ncnn != null -> "GPU"
+        decA != null -> if (decA.device == "CPU") "CPU" else "NPU+CPU"
+        dec?.device == "NPU" -> if ("w8a16" in decFileName) "NPU 정수" else "NPU 16비트"
+        else -> "CPU"
+    }
+    private val decFileName = decFile
+
+    init {
+        try {
+            fun frontSession(name: String, file: String, dims: Map<String, Long>): ModelSession {
+                val original = File(commonDir, file)
+                val source = if (file == "hubert.onnx" && frontFixed)
+                    File(commonDir, "hubert.htp.onnx").takeIf { it.isFile } ?: original else original
+                val cache = if (frontFixed) File(commonDir, "${source.nameWithoutExtension}.$front.${dims.values.joinToString("-")}.onnx") else null
+                return own(ModelSession(name, source, original, front, cache, if (frontFixed) dims else emptyMap()))
+            }
+            hubert = frontSession("특징 추출", "hubert.onnx", mapOf("samples" to hubertSamples.toLong()))
+            rmvpe = frontSession("음높이", "rmvpe.onnx", mapOf("samples" to rmvpeSamples.toLong()))
+            enc = own(ModelSession("인코더", File(modelDir, "model.enc.onnx"), File(modelDir, "model.enc.onnx"), front,
+                if (frontFixed) File(modelDir, "model.enc.$front.$frames.onnx") else null,
+                if (frontFixed) mapOf("T" to frames.toLong()) else emptyMap()))
+            if (ep == "ncnn_gpu") {
+                try {
+                    val gpu = NcnnDecoder(File(modelDir, "model.dec.ncnn.param"), File(modelDir, "model.dec.ncnn.bin"), true, threads)
+                    if (gpu.usesGpu) ncnn = gpu else { gpu.close(); error("Vulkan GPU unavailable") }
+                } catch (failure: Throwable) {
+                    if (!BackendFallback.recoverable(failure)) throw failure
+                    note("디코더", failure)
+                }
+            }
+            decA = if (!split) null else own(ModelSession("디코더 앞부분", File(modelDir, "model.dec_a.onnx"),
+                File(modelDir, "model.dec_a.onnx"), "qnn_htp", File(modelDir, "model.dec_a.qnn_htp.n$decFrames.onnx"), decoderDims))
+            decB = if (!split) null else own(ModelSession("디코더 뒷부분", File(modelDir, "model.dec_b.onnx"),
+                File(modelDir, "model.dec_b.onnx"), "cpu", null, emptyMap()))
+            if (ncnn == null && !split) {
+                val backend = if (ep == "ncnn_gpu" || ep == "split") "cpu" else ep
+                dec = own(ModelSession("디코더", File(modelDir, if (backend == "cpu" && ep == "ncnn_gpu") "model.dec.onnx" else decFile),
+                    File(modelDir, "model.dec.onnx"), backend,
+                    if (qnnOptions(backend) != null) File(modelDir, "${decFile.removeSuffix(".onnx")}.$backend.n$decFrames.onnx") else null,
+                    decoderDims))
+            }
+        } catch (failure: Throwable) {
+            close()
+            throw failure
         }
+    }
     private val rng = Random(seed)
 
     override fun close() {
-        if (profileDir != null) profiled.forEach { runCatching { it.endProfiling() } }
-        listOfNotNull(hubert, rmvpe, enc, dec, decA, decB).forEach { it.close() }
-        ncnn?.close()
-        options.close(); decOptions.close()
+        ncnn?.let { runCatching { it.close() } }; ncnn = null
+        owned.asReversed().forEach { runCatching { it.close() } }
+        owned.clear()
     }
 
     /** progress(done, total) is called after each chunk. */
@@ -319,7 +341,14 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
     }
 
     private fun runDec(z: FloatArray, frames: Int, sine: FloatArray): FloatArray {
-        ncnn?.let { return it.decode(z, frames, sine) }
+        ncnn?.let { gpu ->
+            try { return gpu.decode(z, frames, sine) } catch (failure: Throwable) {
+                if (!allowFallback || !BackendFallback.recoverable(failure)) throw failure
+                gpu.close(); ncnn = null
+                dec = cpuDecoder()
+                note("디코더", failure)
+            }
+        }
         if (decA != null && decB != null) {
             val hidden = OnnxTensor.createTensor(env, FloatBuffer.wrap(z), longArrayOf(1, 192, frames.toLong())).use { zt ->
                 OnnxTensor.createTensor(env, FloatBuffer.wrap(sine), longArrayOf(1, sine.size.toLong(), 1)).use { st ->
@@ -375,7 +404,7 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
         return out
     }
 
-    private fun run(session: OrtSession, input: String, data: FloatArray, shape: LongArray): FloatArray =
+    private fun run(session: ModelSession, input: String, data: FloatArray, shape: LongArray): FloatArray =
         OnnxTensor.createTensor(env, FloatBuffer.wrap(data), shape).use { t ->
             session.run(mapOf(input to t)).use { floats(it[0] as OnnxTensor) }
         }
@@ -391,7 +420,7 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
             // graph optimization 0 (default): ~12 s to prepare, 0.43 s per 2 s piece on the S23+; level 3 is
             // only 7% faster (0.40 s) but takes over 4 minutes to prepare
             "qnn_htp", "qnn_htp3" -> mapOf("backend_path" to "libQnnHtp.so", "htp_performance_mode" to "burst",
-                "htp_arch" to "73", "enable_htp_fp16_precision" to "1",
+                "enable_htp_fp16_precision" to "1",  // detect the on-device HTP architecture
                 "htp_graph_finalization_optimization_mode" to if (ep == "qnn_htp3") "3" else "0")
             "qnn_gpu" -> mapOf("backend_path" to "libQnnGpu.so")
             else -> null

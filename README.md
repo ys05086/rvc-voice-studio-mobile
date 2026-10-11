@@ -9,7 +9,7 @@ Unofficial voice conversion for Android phones, based on [RVC](https://github.co
 - **Record** with a live waveform, then play back, seek and keep takes.
 - **Convert** a recording or an audio file with your own RVC voice model: pitch shift, formant, pitch range guards and intonation.
 - **Realtime**: the microphone converted into your earphones, with an optional recording of both the original and the converted voice. It keeps running with the screen off.
-- **Snapdragon NPU**: on phones with a Hexagon NPU, the feature models and the decoder run on it. The decoder uses 8-bit weights with 16-bit activations (made by the PC converter from a few minutes of your recordings), which sounds like the 32-bit decoder; the NPU's own 16-bit float mode audibly roughens the voice. Elsewhere the decoder runs on the GPU (Vulkan, 32-bit) or the CPU.
+- **Automatic compute selection**: Snapdragon devices try the NPU; other devices use CPU and Vulkan GPU paths. NPU decoding prefers the 8-bit-weight / 16-bit-activation model made by the converter. If accelerator initialization or inference fails, that stage retries on CPU with its original FP32 model. The UI shows the active devices and any fallback.
 - **Settings** behind the gear: voice models, where the models run (Recommended / All 32-bit / Custom) and diagnosis logs.
 
 On a Galaxy S23+ (Snapdragon 8 Gen 2), a 15 s recording converts in about 7 s, and realtime runs 0.25 s blocks in about 0.23 s each, with an estimated 0.65 s from mouth to ear.
@@ -88,7 +88,9 @@ Realtime, one step per block (a step must finish within its block):
 ## Requirements
 
 - Android 10 or later on an arm64 phone.
-- Realtime needs a Snapdragon with a Hexagon NPU (tested on Snapdragon 8 Gen 2). File conversion works on any arm64 phone, faster with Vulkan or the NPU.
+- Both file and realtime conversion can use CPU/GPU paths. Settings → compute device applies to both modes. Without Vulkan or the GPU model files, decoding uses CPU.
+- Realtime throughput depends on chipset, available memory and thermals. The app warns when processing exceeds the block duration; increase the block size or use file conversion.
+- Device measurements are from the Galaxy S23+ only. Automatic selection and fallback have been added for broader compatibility, but Exynos, MediaTek, Tensor and other devices have not been validated. Android/ARM64 requirements alone do not guarantee operation on every device.
 - A Windows PC for the converter (Python 3.10 or later; it sets up its own environment).
 
 ## Getting started
