@@ -19,6 +19,7 @@ data class LiveParams(
     val cushion: Double = 0.06,   // seconds of output kept queued, against uneven compute times
     val thresholdDb: Double = -60.0, // quieter input than this comes out silent
     val gainDb: Double = 12.0,    // output boost; the input follows a quiet, unprocessed microphone
+    val skipQuiet: Boolean = false, // skip inference only after the ENTIRE context is below the existing gate
 ) {
     /** Frames HuBERT, RMVPE and enc see each step; the NPU's fixed window, when there is one, sets the context. */
     fun window(fixed: Int?): Int {
@@ -49,6 +50,7 @@ class LiveCore(private val rvc: Rvc, val params: LiveParams) {
     private val sola = params.crossfade * 480
     private val fadeIn = FloatArray(sola) { i -> sin(0.5 * PI * i / max(sola, 1)).pow(2).toFloat() }
     private val state = StreamState(window, b)
+    private val downsampler = Dsp.WindowResampler()
     private var previous: FloatArray? = null
     private var gate = 0f
     private var holdLeft = 0
@@ -76,9 +78,12 @@ class LiveCore(private val rvc: Rvc, val params: LiveParams) {
         private set
     var lastClipped = false
         private set
+    var lastSkippedQuiet = false
+        private set
 
     /** After a skip or an audio restart the past no longer lines up: start the stream over. */
     fun reset() {
+        downsampler.reset()
         state.reset()
         previous = null
         gate = 0f
@@ -86,10 +91,19 @@ class LiveCore(private val rvc: Rvc, val params: LiveParams) {
     }
 
     /** x48: the newest [w48] samples at 48 kHz (the step's block last). Returns [b48] samples for the earphones. */
-    fun step(x48: FloatArray, st: Rvc.Settings, bypass: Boolean = false): FloatArray {
+    fun step(x48: FloatArray, st: Rvc.Settings, bypass: Boolean = false, allowQuietSkip: Boolean = true): FloatArray {
         require(x48.size == w48)
         val t0 = System.nanoTime()
-        val x16 = if (bypass) null else fit(Dsp.resample(x48, 48000, 16000), window * 160)
+        lastSkippedQuiet = false
+        if (params.skipQuiet && allowQuietSkip && !bypass && isQuietContext(x48, threshold)) {
+            reset()
+            lastSkippedQuiet = true
+            lastInPeak = x48.maxOfOrNull { abs(it) } ?: 0f
+            lastRawPeak = 0f; lastClipped = false
+            lastPrepMs = (System.nanoTime() - t0) / 1e6; lastPostMs = 0.0
+            return FloatArray(b48)
+        }
+        val x16 = if (bypass) null else fit(downsampler.process(x48,b48), window * 160)
         val t1 = System.nanoTime()
         val y = if (x16 == null) x48.copyOfRange(w48 - tail * 480, w48)
                 else rvc.streamWindow(x16, st, tail, b, state)
@@ -145,6 +159,17 @@ class LiveCore(private val rvc: Rvc, val params: LiveParams) {
     fun heard(x48: FloatArray): FloatArray = x48.copyOfRange(w48 - tail * 480, w48 - tail * 480 + b48)
 
     companion object {
+        /** Do not discard words merely because the latest block is quiet: inspect all historical context too. */
+        fun isQuietContext(x: FloatArray, threshold: Float): Boolean {
+            if (x.size < 48000 * 3 / 10 || threshold <= 0 || !threshold.isFinite()) return false
+            for (a in x.indices step 480) {
+                val end = min(a + 480, x.size)
+                var energy = 0.0
+                for (k in a until end) energy += x[k].toDouble() * x[k]
+                if (!energy.isFinite() || energy >= threshold.toDouble() * threshold * (end - a)) return false
+            }
+            return true
+        }
         /** Above 0.8 the peaks bend smoothly towards 1 instead of clipping. */
         fun softClip(v: Float): Float {
             val a = abs(v)

@@ -10,13 +10,13 @@ class NcnnDecoder(param: File, model: File, gpu: Boolean, threads: Int) : AutoCl
     private var handle = nativeCreate(param.path, model.path, gpu, threads)
 
     init {
-        require(handle != 0L) { "ncnn 디코더를 열지 못했어요 (${param.name})" }
+        require(handle != 0L) { str(R.string.ui_could_not_open_ncnn_decoder, param.name) }
     }
 
     val usesGpu: Boolean get() = handle != 0L && nativeUsesGpu(handle)
 
     fun decode(z: FloatArray, frames: Int, sine: FloatArray): FloatArray =
-        nativeDecode(handle, z, frames, sine) ?: throw IllegalStateException("ncnn 디코더가 실패했어요")
+        nativeDecode(handle, z, frames, sine) ?: throw IllegalStateException(str(R.string.ui_ncnn_decoder_failed))
 
     override fun close() {
         if (handle != 0L) {

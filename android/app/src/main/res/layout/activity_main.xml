@@ -30,7 +30,7 @@
                     android:layout_height="wrap_content"
                     android:textSize="22sp"
                     android:textStyle="bold" />
-                <TextView style="@style/Hint" android:text="폰에서 녹음하고 바로 바꾸는 목소리" />
+                <TextView style="@style/Hint" android:text="@string/ui_record_and_transform_your_voice_on_your" />
             </LinearLayout>
             <TextView
                 android:id="@+id/status"
@@ -49,7 +49,7 @@
                 android:layout_height="38dp"
                 android:layout_marginStart="8dp"
                 android:background="@drawable/circle"
-                android:contentDescription="설정"
+                android:contentDescription="@string/ui_settings"
                 android:gravity="center"
                 android:text="⚙"
                 android:textColor="@color/accent_strong"
@@ -69,7 +69,7 @@
                 android:layout_weight="1"
                 android:background="@drawable/tab"
                 android:gravity="center"
-                android:text="녹음"
+                android:text="@string/ui_record"
                 android:textColor="@color/tab_text"
                 android:textSize="14sp"
                 android:textStyle="bold" />
@@ -80,7 +80,7 @@
                 android:layout_weight="1"
                 android:background="@drawable/tab"
                 android:gravity="center"
-                android:text="변환"
+                android:text="@string/ui_convert_2"
                 android:textColor="@color/tab_text"
                 android:textSize="14sp"
                 android:textStyle="bold" />
@@ -91,7 +91,7 @@
                 android:layout_weight="1"
                 android:background="@drawable/tab"
                 android:gravity="center"
-                android:text="실시간"
+                android:text="@string/ui_live_4"
                 android:textColor="@color/tab_text"
                 android:textSize="14sp"
                 android:textStyle="bold" />
@@ -129,7 +129,7 @@
                             android:layout_weight="1"
                             android:ellipsize="end"
                             android:maxLines="1"
-                            android:text="새 녹음" />
+                            android:text="@string/ui_new_recording" />
                         <TextView
                             android:id="@+id/rec_time"
                             style="@style/SliderValue"
@@ -162,7 +162,7 @@
                             android:layout_marginEnd="22dp"
                             android:background="@drawable/rec_outer"
                             android:clickable="true"
-                            android:contentDescription="녹음"
+                            android:contentDescription="@string/ui_record"
                             android:focusable="true">
                             <View
                                 android:id="@+id/record_dot"
@@ -185,7 +185,7 @@
                         android:layout_width="match_parent"
                         android:layout_marginTop="12dp"
                         android:gravity="center"
-                        android:text="빨간 버튼을 누르면 녹음을 시작해요" />
+                        android:text="@string/ui_tap_the_red_button_to_start_recording" />
                 </LinearLayout>
                 <Button
                     android:id="@+id/to_convert"
@@ -195,7 +195,7 @@
                     android:background="@drawable/btn_primary"
                     android:enabled="false"
                     android:stateListAnimator="@null"
-                    android:text="이 녹음 변환하기 →"
+                    android:text="@string/ui_convert_this_recording"
                     android:textAllCaps="false"
                     android:textColor="#FFFFFF"
                     android:textSize="16sp"
@@ -206,11 +206,11 @@
                         android:layout_height="wrap_content"
                         android:gravity="bottom"
                         android:orientation="horizontal">
-                        <TextView style="@style/CardTitle" android:text="녹음 목록" />
+                        <TextView style="@style/CardTitle" android:text="@string/ui_recordings" />
                         <TextView
                             style="@style/Hint"
                             android:layout_marginStart="10dp"
-                            android:text="눌러서 열기 · 길게 눌러 지우기" />
+                            android:text="@string/ui_tap_to_open_hold_to_delete" />
                     </LinearLayout>
                     <LinearLayout
                         android:id="@+id/rec_list"
@@ -238,7 +238,7 @@
                             style="@style/CardTitle"
                             android:layout_width="0dp"
                             android:layout_weight="1"
-                            android:text="실시간 변환" />
+                            android:text="@string/ui_live_conversion" />
                         <TextView
                             android:id="@+id/live_rec_time"
                             style="@style/SliderValue"
@@ -252,7 +252,7 @@
                             android:layout_height="36dp"
                             android:layout_marginEnd="8dp"
                             android:enabled="false"
-                            android:text="● 녹음" />
+                            android:text="@string/ui_record_2" />
                         <Button
                             android:id="@+id/live_toggle"
                             android:layout_width="wrap_content"
@@ -263,7 +263,7 @@
                             android:paddingStart="20dp"
                             android:paddingEnd="20dp"
                             android:stateListAnimator="@null"
-                            android:text="켜기"
+                            android:text="@string/ui_start"
                             android:textAllCaps="false"
                             android:textColor="#FFFFFF"
                             android:textSize="14sp"
@@ -300,7 +300,7 @@
                         style="@style/Hint"
                         android:layout_width="match_parent"
                         android:layout_marginTop="6dp"
-                        android:text="이어폰을 끼고 켜세요. 이어폰이 없으면 통화 스피커(귀에 대는 곳)로 나와요." />
+                        android:text="@string/ui_use_headphones_without_headphones_audio_plays_through" />
                 </LinearLayout>
             </LinearLayout>
 
@@ -321,7 +321,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="설정"
+                        android:text="@string/ui_settings"
                         android:textSize="20sp"
                         android:textStyle="bold" />
                     <Button
@@ -329,7 +329,7 @@
                         style="@style/SoftButton"
                         android:layout_width="wrap_content"
                         android:layout_height="36dp"
-                        android:text="닫기" />
+                        android:text="@string/ui_close" />
                 </LinearLayout>
                 <LinearLayout style="@style/Card">
                     <LinearLayout
@@ -341,13 +341,13 @@
                             style="@style/CardTitle"
                             android:layout_width="0dp"
                             android:layout_weight="1"
-                            android:text="목소리 모델" />
+                            android:text="@string/ui_voice_model_2" />
                         <Button
                             android:id="@+id/import_model"
                             style="@style/SoftButton"
                             android:layout_width="wrap_content"
                             android:layout_height="34dp"
-                            android:text="불러오기" />
+                            android:text="@string/ui_import" />
                     </LinearLayout>
                     <Spinner
                         android:id="@+id/model"
@@ -375,7 +375,7 @@
                             style="@style/SoftButton"
                             android:layout_width="wrap_content"
                             android:layout_height="34dp"
-                            android:text="받기" />
+                            android:text="@string/ui_download" />
                     </LinearLayout>
                     <ProgressBar
                         android:id="@+id/common_progress"
@@ -408,12 +408,12 @@
                         android:layout_height="wrap_content"
                         android:gravity="bottom"
                         android:orientation="horizontal">
-                        <TextView style="@style/CardTitle" android:text="음높이 · 질감" />
+                        <TextView style="@style/CardTitle" android:text="@string/ui_pitch_texture" />
                         <TextView
                             style="@style/Hint"
                             android:layout_marginStart="10dp"
                             android:id="@+id/voice_hint"
-                            android:text="모델마다 따로 저장" />
+                            android:text="@string/ui_saved_separately_for_each_model" />
                     </LinearLayout>
                     <LinearLayout
                         android:layout_width="match_parent"
@@ -429,9 +429,9 @@
                             <TextView
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
-                                android:text="음높이"
+                                android:text="@string/ui_pitch"
                                 android:textSize="13sp" />
-                            <TextView style="@style/Hint" android:text="내 목소리보다 높이거나 낮춰요 · 12반음 = 한 옥타브" />
+                            <TextView style="@style/Hint" android:text="@string/ui_raise_or_lower_your_voice_semitones_octave" />
                         </LinearLayout>
                         <TextView android:id="@+id/pitch_value" style="@style/SliderValue" />
                     </LinearLayout>
@@ -440,9 +440,9 @@
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:orientation="horizontal">
-                        <TextView style="@style/Scale" android:text="−24 낮게" />
-                        <TextView style="@style/Scale" android:gravity="center" android:text="0 그대로" />
-                        <TextView style="@style/Scale" android:gravity="end" android:text="+24 높게" />
+                        <TextView style="@style/Scale" android:text="@string/ui_lower" />
+                        <TextView style="@style/Scale" android:gravity="center" android:text="@string/ui_original_3" />
+                        <TextView style="@style/Scale" android:gravity="end" android:text="@string/ui_higher" />
                     </LinearLayout>
                     <LinearLayout
                         android:layout_width="match_parent"
@@ -450,7 +450,7 @@
                         android:layout_marginTop="10dp"
                         android:gravity="center_vertical"
                         android:orientation="horizontal">
-                        <TextView style="@style/SliderLabel" android:text="포먼트 · 목소리 질감" />
+                        <TextView style="@style/SliderLabel" android:text="@string/ui_formant_voice_texture" />
                         <TextView android:id="@+id/formant_value" style="@style/SliderValue" />
                     </LinearLayout>
                     <SeekBar android:id="@+id/formant" style="@style/Slider" android:max="40" />
@@ -475,9 +475,9 @@
                             <TextView
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
-                                android:text="음량 맞추기"
+                                android:text="@string/ui_normalize_volume"
                                 android:textSize="13sp" />
-                            <TextView style="@style/Hint" android:text="작게 녹음해도 결과를 알맞은 크기로 키워요" />
+                            <TextView style="@style/Hint" android:text="@string/ui_boost_quiet_recordings_to_a_suitable_output" />
                         </LinearLayout>
                         <Switch
                             android:id="@+id/normalize"
@@ -501,13 +501,13 @@
                             android:layout_weight="1"
                             android:ellipsize="end"
                             android:maxLines="1"
-                            android:text="원본" />
+                            android:text="@string/ui_original_4" />
                         <Button
                             android:id="@+id/pick"
                             style="@style/SoftButton"
                             android:layout_width="wrap_content"
                             android:layout_height="34dp"
-                            android:text="파일 고르기" />
+                            android:text="@string/ui_choose_file" />
                     </LinearLayout>
                     <com.voicestudio.phone.WaveformView
                         android:id="@+id/in_wave"
@@ -540,7 +540,7 @@
                             android:layout_marginStart="10dp"
                             android:layout_weight="1"
                             android:gravity="end"
-                            android:text="녹음 탭에서 보내거나 파일을 고르세요" />
+                            android:text="@string/ui_send_a_recording_from_the_record_tab" />
                     </LinearLayout>
                 </LinearLayout>
 
@@ -552,7 +552,7 @@
                     android:background="@drawable/btn_primary"
                     android:enabled="false"
                     android:stateListAnimator="@null"
-                    android:text="변환하기"
+                    android:text="@string/ui_convert"
                     android:textAllCaps="false"
                     android:textColor="#FFFFFF"
                     android:textSize="16sp"
@@ -576,7 +576,7 @@
                         style="@style/CardTitle"
                         android:ellipsize="end"
                         android:maxLines="1"
-                        android:text="변환 결과" />
+                        android:text="@string/ui_converted_audio" />
                     <com.voicestudio.phone.WaveformView
                         android:id="@+id/out_wave"
                         android:layout_width="match_parent"
@@ -609,14 +609,14 @@
                             style="@style/SoftButton"
                             android:layout_width="wrap_content"
                             android:layout_height="36dp"
-                            android:text="저장" />
+                            android:text="@string/ui_save" />
                         <Button
                             android:id="@+id/share"
                             style="@style/SoftButton"
                             android:layout_width="wrap_content"
                             android:layout_height="36dp"
                             android:layout_marginStart="8dp"
-                            android:text="공유" />
+                            android:text="@string/ui_share" />
                     </LinearLayout>
                     <TextView
                         android:id="@+id/out_info"

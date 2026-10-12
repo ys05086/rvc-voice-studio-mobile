@@ -62,9 +62,9 @@ class SampleRing(private val capacity: Int) {
 
     /** Samples [start, start + n) by absolute position; positions not stored (yet, or any more) read as zeros. */
     @Synchronized
-    fun copy(start: Long, n: Int): FloatArray {
+    fun copy(start: Long, n: Int, minimumPosition: Long = 0L): FloatArray {
         val out = FloatArray(n)
-        val from = max(start, max(0L, written - capacity))
+        val from = max(start, max(minimumPosition, max(0L, written - capacity)))
         val to = min(start + n, written)
         var pos = from
         while (pos < to) {
@@ -144,6 +144,9 @@ class LiveEngine(private val context: Context, private val rvc: Rvc, val params:
     private val power = context.getSystemService(PowerManager::class.java)
 
     val isRunning get() = running
+    val canFeedWeb get() = running && !bypass
+    internal val webAudio = WebAudioQueue()
+    @Volatile var webOutput = false
 
     fun snapshot(): Stats = synchronized(lock) { stats }
 
@@ -166,11 +169,11 @@ class LiveEngine(private val context: Context, private val rvc: Rvc, val params:
     }
 
     private fun describe(d: AudioDeviceInfo?): String = when (d?.type) {
-        null -> "기본 출력"
-        AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "스피커"
-        AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> "통화 스피커 (귀에 대고 들어요)"
-        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "블루투스 ${d.productName}"
-        else -> "이어폰 ${d.productName}"
+        null -> str(R.string.ui_default_output)
+        AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> str(R.string.ui_speaker)
+        AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> str(R.string.ui_earpiece_hold_the_phone_to_your_ear)
+        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> str(R.string.ui_bluetooth, d.productName)
+        else -> str(R.string.ui_headphones, d.productName)
     }
 
     /** A few silent steps before the audio starts: the first runs of a new shape are slow. */
@@ -193,7 +196,7 @@ class LiveEngine(private val context: Context, private val rvc: Rvc, val params:
         val inMin = AudioRecord.getMinBufferSize(48000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_FLOAT)
         val rec = AudioRecord.Builder().setAudioSource(source).setAudioFormat(inFormat)
             .setBufferSizeInBytes(max(inMin, 4 * 4800)).build()
-        if (rec.state != AudioRecord.STATE_INITIALIZED) { rec.release(); throw IllegalStateException("마이크를 열지 못했어요") }
+        if (rec.state != AudioRecord.STATE_INITIALIZED) { rec.release(); throw IllegalStateException(str(R.string.ui_could_not_open_the_microphone)) }
         val (device, earpiece) = outputDevice(am)
         val usage = if (earpiece) AudioAttributes.USAGE_VOICE_COMMUNICATION else AudioAttributes.USAGE_MEDIA
         val outFormat = AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_FLOAT).setSampleRate(48000)
@@ -224,6 +227,8 @@ class LiveEngine(private val context: Context, private val rvc: Rvc, val params:
         if (failure != null) synchronized(lock) { stats = stats.copy(failure = failure) }
         if (!running && threads.isEmpty()) return
         running = false
+        webAudio.disable()
+        webOutput = false
         wake.release()
         val me = Thread.currentThread()
         threads.filter { it !== me }.forEach { it.join(2000) }
@@ -280,6 +285,8 @@ class LiveEngine(private val context: Context, private val rvc: Rvc, val params:
                 buf.fill(0f, got, buf.size)
                 if (armed) synchronized(lock) { underrunEvents++; underrunSamples += buf.size - got }
             }
+            // Web calls receive the converted block directly; avoid feeding local monitoring back into the mic.
+            if (webOutput) buf.fill(0f)
             trk.write(buf, 0, buf.size, AudioTrack.WRITE_BLOCKING)
         }
     }
@@ -378,6 +385,7 @@ class LiveEngine(private val context: Context, private val rvc: Rvc, val params:
                     val before = rvc.timing.copyOf()
                     val x48 = mic.copy(end - w48, w48)
                     val block = core.step(x48, settings, bypass)
+                    if (!bypass) webAudio.offer(block)
                     val modelled = System.nanoTime()
                     // queue for the earphones after an initial cushion; never let the queue grow past it for long
                     if (!primed) out.write(FloatArray(cushion))

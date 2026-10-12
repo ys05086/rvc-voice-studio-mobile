@@ -41,7 +41,11 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
           private val profileDir: File? = null,
           private val allowFallback: Boolean = false) : AutoCloseable {
     /** A realtime step: [block] new frames, the last [tail] frames of the window decoded (block + crossfade + search). */
-    data class LiveShape(val block: Int, val tail: Int)
+    data class LiveShape(val block: Int, val tail: Int, val fixedFormant: Double? = null) {
+        init { require(fixedFormant == null || (fixedFormant.isFinite() && fixedFormant in -2.0..2.0)) }
+        val decoderFrames: Int get() = ceil((tail + LIVE_DEC_CONTEXT) *
+            (fixedFormant?.let { 2.0.pow(it / 12) } ?: MAX_FORMANT_FACTOR)).toInt()
+    }
 
     data class Settings(
         val pitch: Double = 0.0, val formant: Double = 0.0,
@@ -57,7 +61,7 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
     private val notices = java.util.concurrent.CopyOnWriteArrayList<String>()
     val fallbackNotice: String? get() = notices.takeIf { it.isNotEmpty() }?.joinToString(" · ")
     private fun note(stage: String, failure: Throwable) {
-        notices.add("$stage CPU로 전환")
+        notices.add(str(R.string.ui_switched_to_cpu, stage))
         android.util.Log.w("VoiceStudio", "$stage accelerator unavailable; using CPU", failure)
     }
     private fun <T : AutoCloseable> own(value: T): T = value.also { owned.add(it) }
@@ -66,7 +70,7 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
     private val fixedWindows = frontFixed || cpuFixedWindows || allowFallback
     private val split = ep == "split" && File(modelDir, "model.dec_a.onnx").isFile && File(modelDir, "model.dec_b.onnx").isFile
     private val decFixed = qnnOptions(ep) != null || ep == "ncnn_gpu" || split || allowFallback
-    val decFrames = if (live == null) DEC_FRAMES else ceil((live.tail + LIVE_DEC_CONTEXT) * MAX_FORMANT_FACTOR).toInt()
+    val decFrames = live?.decoderFrames ?: DEC_FRAMES
     val timing = DoubleArray(5)
     val window = frontChunk + 320 + 2 * 16000
     val realtimeWindow: Int? = if (live != null && fixedWindows) REALTIME_WINDOW else null
@@ -76,7 +80,8 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
     private val decoderDims get() = if (decFixed) mapOf("n" to decFrames.toLong(), "samples" to decFrames * 480L) else emptyMap()
 
     private inner class ModelSession(val name: String, src: File, cpuSrc: File, val backend: String,
-                                     private val cache: File?, private val dims: Map<String, Long>) : AutoCloseable {
+                                     private val cache: File?, private val dims: Map<String, Long>,
+                                     private val allowCpuPartition: Boolean = false) : AutoCloseable {
         private val accelerated = backend != "cpu"
         private fun load(file: File, device: String, cached: Boolean = false): OrtSession =
             OrtSession.SessionOptions().use { options ->
@@ -89,8 +94,9 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
                     "nnapi16" -> options.addNnapi(java.util.EnumSet.of(ai.onnxruntime.providers.NNAPIFlags.USE_FP16))
                     else -> qnnOptions(device)?.let {
                         options.addQnn(it)
-                        // App compatibility mode must not claim NPU when ORT silently used CPU.
-                        if (allowFallback) options.addConfigEntry("session.disable_cpu_ep_fallback", "1")
+                        // RMVPE intentionally runs its GRU on CPU; keep its supported QNN partitions.
+                        // Other stages must fail explicitly rather than silently claiming full NPU execution.
+                        if (allowFallback && !allowCpuPartition) options.addConfigEntry("session.disable_cpu_ep_fallback", "1")
                         if (!cached && cache != null) {
                             options.addConfigEntry("ep.context_enable", "1")
                             options.addConfigEntry("ep.context_embed_mode", "1")
@@ -114,7 +120,7 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
             fallback = if (allowFallback && accelerated) ({ load(cpuSrc, "cpu") }) else null,
             onFallback = { note(name, it) },
         )
-        val device: String get() = if (resource.usingFallback || !accelerated) "CPU" else "NPU"
+        val device: String get() = if (resource.usingFallback || !accelerated) "CPU" else if (allowCpuPartition) "NPU+CPU" else "NPU"
         fun run(inputs: Map<String, OnnxTensor>): OrtSession.Result = resource.run { it.run(inputs) }
         override fun close() = resource.close()
     }
@@ -126,13 +132,13 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
     private val decB: ModelSession?
     @Volatile private var ncnn: NcnnDecoder? = null
     private var dec: ModelSession? = null
-    private fun cpuDecoder() = own(ModelSession("디코더", File(modelDir, "model.dec.onnx"),
+    private fun cpuDecoder() = own(ModelSession(str(R.string.ui_decoder), File(modelDir, "model.dec.onnx"),
         File(modelDir, "model.dec.onnx"), "cpu", null, decoderDims))
-    val frontDevice: String get() = listOf(hubert.device, rmvpe.device, enc.device).distinct().joinToString("+")
+    val frontDevice: String get() = listOf(hubert.device, rmvpe.device, enc.device).flatMap { it.split('+') }.distinct().joinToString("+")
     val decoderDevice: String get() = when {
         ncnn != null -> "GPU"
         decA != null -> if (decA.device == "CPU") "CPU" else "NPU+CPU"
-        dec?.device == "NPU" -> if ("w8a16" in decFileName) "NPU 정수" else "NPU 16비트"
+        dec?.device == "NPU" -> if ("w8a16" in decFileName) str(R.string.ui_integer_npu) else str(R.string.ui_bit_npu)
         else -> "CPU"
     }
     private val decFileName = decFile
@@ -144,11 +150,12 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
                 val source = if (file == "hubert.onnx" && frontFixed)
                     File(commonDir, "hubert.htp.onnx").takeIf { it.isFile } ?: original else original
                 val cache = if (frontFixed) File(commonDir, "${source.nameWithoutExtension}.$front.${dims.values.joinToString("-")}.onnx") else null
-                return own(ModelSession(name, source, original, front, cache, if (frontFixed) dims else emptyMap()))
+                return own(ModelSession(name, source, original, front, cache, if (frontFixed) dims else emptyMap(),
+                    allowCpuPartition = frontFixed && file == "rmvpe.onnx"))
             }
-            hubert = frontSession("특징 추출", "hubert.onnx", mapOf("samples" to hubertSamples.toLong()))
-            rmvpe = frontSession("음높이", "rmvpe.onnx", mapOf("samples" to rmvpeSamples.toLong()))
-            enc = own(ModelSession("인코더", File(modelDir, "model.enc.onnx"), File(modelDir, "model.enc.onnx"), front,
+            hubert = frontSession(str(R.string.ui_feature_extraction), "hubert.onnx", mapOf("samples" to hubertSamples.toLong()))
+            rmvpe = frontSession(str(R.string.ui_pitch), "rmvpe.onnx", mapOf("samples" to rmvpeSamples.toLong()))
+            enc = own(ModelSession(str(R.string.ui_encoder), File(modelDir, "model.enc.onnx"), File(modelDir, "model.enc.onnx"), front,
                 if (frontFixed) File(modelDir, "model.enc.$front.$frames.onnx") else null,
                 if (frontFixed) mapOf("T" to frames.toLong()) else emptyMap()))
             if (ep == "ncnn_gpu") {
@@ -157,16 +164,16 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
                     if (gpu.usesGpu) ncnn = gpu else { gpu.close(); error("Vulkan GPU unavailable") }
                 } catch (failure: Throwable) {
                     if (!BackendFallback.recoverable(failure)) throw failure
-                    note("디코더", failure)
+                    note(str(R.string.ui_decoder), failure)
                 }
             }
-            decA = if (!split) null else own(ModelSession("디코더 앞부분", File(modelDir, "model.dec_a.onnx"),
+            decA = if (!split) null else own(ModelSession(str(R.string.ui_decoder_front), File(modelDir, "model.dec_a.onnx"),
                 File(modelDir, "model.dec_a.onnx"), "qnn_htp", File(modelDir, "model.dec_a.qnn_htp.n$decFrames.onnx"), decoderDims))
-            decB = if (!split) null else own(ModelSession("디코더 뒷부분", File(modelDir, "model.dec_b.onnx"),
+            decB = if (!split) null else own(ModelSession(str(R.string.ui_decoder_back), File(modelDir, "model.dec_b.onnx"),
                 File(modelDir, "model.dec_b.onnx"), "cpu", null, emptyMap()))
             if (ncnn == null && !split) {
                 val backend = if (ep == "ncnn_gpu" || ep == "split") "cpu" else ep
-                dec = own(ModelSession("디코더", File(modelDir, if (backend == "cpu" && ep == "ncnn_gpu") "model.dec.onnx" else decFile),
+                dec = own(ModelSession(str(R.string.ui_decoder), File(modelDir, if (backend == "cpu" && ep == "ncnn_gpu") "model.dec.onnx" else decFile),
                     File(modelDir, "model.dec.onnx"), backend,
                     if (qnnOptions(backend) != null) File(modelDir, "${decFile.removeSuffix(".onnx")}.$backend.n$decFrames.onnx") else null,
                     decoderDims))
@@ -253,6 +260,7 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
      *  whatever the formant). [state] carries the excitation's phase to the next window, whose decoder starts
      *  `advance` frames later (so the harmonics run on without a jump), and the pitch of frames seen before. */
     fun streamWindow(x16: FloatArray, st: Settings, tail: Int, advance: Int, state: StreamState?): FloatArray {
+        live?.fixedFormant?.let { require(abs(st.formant - it) < 1e-9) { "Fixed-formant session must be rebuilt after a formant change" } }
         val clock = Lap()
         state?.advance(advance)
         val (z, f0, pLen) = analyze(x16, st, state, clock)
@@ -346,7 +354,7 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
                 if (!allowFallback || !BackendFallback.recoverable(failure)) throw failure
                 gpu.close(); ncnn = null
                 dec = cpuDecoder()
-                note("디코더", failure)
+                note(str(R.string.ui_decoder), failure)
             }
         }
         if (decA != null && decB != null) {
@@ -362,7 +370,7 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
                 }
             }
         }
-        val session = dec ?: throw IllegalStateException("디코더가 없어요")
+        val session = dec ?: throw IllegalStateException(str(R.string.ui_decoder_unavailable))
         return OnnxTensor.createTensor(env, FloatBuffer.wrap(z), longArrayOf(1, 192, frames.toLong())).use { zt ->
             OnnxTensor.createTensor(env, FloatBuffer.wrap(sine), longArrayOf(1, sine.size.toLong(), 1)).use { st ->
                 session.run(mapOf("z" to zt, "sine" to st)).use { floats(it[0] as OnnxTensor) }
@@ -712,6 +720,42 @@ object Dsp {
     }
 
     private val tapSets = HashMap<Int, DoubleArray>()
+
+    /** Exact rolling 48->16k conversion. Recompute both window boundaries and all newly arrived samples. */
+    class WindowResampler {
+        private var previous: FloatArray? = null
+        private var converted: FloatArray? = null
+        fun reset() { previous=null; converted=null }
+        fun process(x: FloatArray, advance: Int): FloatArray {
+            val prev=previous
+            val old=converted
+            var reusable=prev!=null && old!=null && prev.size==x.size && advance>0 && advance<x.size && advance%3==0
+            if(reusable) {
+                for(i in 0 until x.size-advance) if(x[i]!=prev!![i+advance]) { reusable=false; break }
+            }
+            val out: FloatArray
+            if(!reusable) out=decimate(x,3,24)
+            else {
+                val cutoff=.95/3
+                val weights=taps(3,24,cutoff,24/cutoff)
+                val reach=weights.size-1
+                val shift=advance/3
+                out=FloatArray(x.size/3)
+                for(i in out.indices) {
+                    val t=i*3
+                    if(t>=reach && t+reach<x.size-advance) out[i]=old!![i+shift]
+                    else {
+                        var acc=0.0
+                        for(j in max(t-reach,0)..min(t+reach,x.size-1)) acc+=x[j]*weights[abs(t-j)]
+                        out[i]=acc.toFloat()
+                    }
+                }
+            }
+            // Keep a copy: callers may refill the same rolling input array for their next step.
+            previous=x.copyOf(); converted=out
+            return out
+        }
+    }
 
     @Synchronized
     private fun taps(factor: Int, zeros: Int, cutoff: Double, width: Double): DoubleArray = tapSets.getOrPut(factor * 1000 + zeros) {

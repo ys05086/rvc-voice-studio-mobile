@@ -23,7 +23,7 @@ object AudioIo {
         extractor.setDataSource(context, uri, null)
         val track = (0 until extractor.trackCount).firstOrNull {
             extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
-        } ?: throw IllegalArgumentException("오디오가 없는 파일이에요")
+        } ?: throw IllegalArgumentException(str(R.string.ui_this_file_contains_no_audio))
         extractor.selectTrack(track)
         val format = extractor.getTrackFormat(track)
         val codec = MediaCodec.createDecoderByType(format.getString(MediaFormat.KEY_MIME)!!)
@@ -106,7 +106,7 @@ object AudioIo {
                 return Dsp.resample(x, rate, Rvc.SR)
             } else b.position(b.position() + size + (size and 1))
         }
-        throw IllegalArgumentException("WAV 데이터가 없어요")
+        throw IllegalArgumentException(str(R.string.ui_no_wav_audio_data_found))
     }
 
     fun peakNormalize(x: FloatArray, peakDb: Double = -1.0, maxGainDb: Double = 18.0): FloatArray {
@@ -126,7 +126,7 @@ class Recorder(context: Context) {
     private val source = if ((context.getSystemService(Context.AUDIO_SERVICE) as AudioManager)
             .getProperty(AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED) == "true")
         MediaRecorder.AudioSource.UNPROCESSED else MediaRecorder.AudioSource.VOICE_RECOGNITION
-    val sourceName = if (source == MediaRecorder.AudioSource.UNPROCESSED) "처리 없는 원음" else "음성 인식용 입력"
+    val sourceName = if (source == MediaRecorder.AudioSource.UNPROCESSED) str(R.string.ui_unprocessed_audio) else str(R.string.ui_voice_recognition_input)
     @Volatile private var running = false
     private var thread: Thread? = null
     private val chunks = ArrayList<ShortArray>()

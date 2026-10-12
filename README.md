@@ -1,8 +1,32 @@
 # RVC Voice Studio Mobile (Android)
 
-Unofficial voice conversion for Android phones, based on [RVC](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI) (Retrieval-based Voice Conversion). Everything runs on the phone: recordings and voices are never uploaded.
+Unofficial voice conversion for Android phones, based on [RVC](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI) (Retrieval-based Voice Conversion). Conversion runs on the phone; recordings and voice models are not automatically uploaded. Connecting a web call sends converted audio to the selected website.
 
 [한국어 README](README.ko.md)
+
+## One app, two ways to send your voice
+
+The UI now supports **English and Korean**. Use web calls without Shizuku, or connect Shizuku to use the experimental virtual microphone with installed apps. Shizuku is optional; recording, file conversion and local live monitoring work without it.
+
+- [App setup, web calls and Shizuku instructions](docs/USAGE.md)
+- [PC converter: every step, USB/wireless transfer and troubleshooting](converter/USAGE.md)
+- The virtual mic has no 30-second start deadline or five-minute limit. Its ongoing notification shows status and elapsed time and provides a Stop button. No active destination input means capture/inference pause.
+- Tested routing/listening: Galaxy S23+ / Android 16, native Discord and Secure Folder KakaoTalk. Other hardware, cellular calls, Bluetooth input and Instagram listening remain unverified. Short screen-off testing passed; long battery-only use is not yet validated.
+
+
+## Web call prototype (end-to-end calls not yet validated)
+
+Open **Live → Web calls · Desktop browser** to browse desktop sites while the existing realtime conversion continues. The browser includes an address bar, back/forward, reload, desktop/mobile display, and login-data clearing. Discord, Meet, Instagram and Messenger shortcuts are entry URLs, not a claim of verified call compatibility.
+
+Start realtime conversion with a voice model and bypass disabled, open the website, sign in, tap **Prepare call audio** in the page if needed, then **Connect voice to this site** and join the site's audio call. The supplied microphone is named `Voice Studio · converted voice`.
+
+The HuBERT + RMVPE + encoder / decoder pipeline is unchanged. Its joined 48 kHz output feeds a synthetic Web Audio microphone. Local voice monitoring is muted while connected and restored on disconnect. Use headphones to keep received audio out of the physical mic. Displayed web queue time is not total call latency.
+
+Native web permissions for the physical microphone and camera are always denied; a failed bridge never falls back to raw capture. Conversion stopping, navigation/reload, leaving the browser or locking the screen disconnects forwarding and clears queued audio. Reconnect explicitly on return. Native realtime conversion may continue. The synthetic input is silent until connected and after disconnecting.
+
+This prototype supports foreground **audio-only** calls on top-level HTTPS pages. Embedded calls, camera/screen sharing and services that reject WebView sign-in may not work. Audio forwarding requires Android System WebView support for document-start scripts and web messaging; unsupported providers can still browse.
+
+On 2026-10-11, a Galaxy S23+ with Android System WebView 154.0.8037.106 displayed the desktop login page while realtime conversion ran, accepted converted PCM into its Web Audio buffer, and disconnected forwarding on explicit disconnect/reload. A displayed 100 ms queue was a single buffer observation, not end-to-end latency. Login, remote reception, call latency and sustained calling remain unverified. Device checks must cover joining/reacquiring the mic, remote silence after disconnect/stop/navigation, reconnection, headphone receive audio and sustained load. Local checks: `node --test android/web-tests/bridge.test.cjs` and Gradle `:app:testDebugUnitTest`.
 
 ## What it does
 
@@ -97,7 +121,7 @@ Realtime, one step per block (a step must finish within its block):
 
 1. Install the APK from the Releases page (or build it, see below).
 2. Get the shared models (HuBERT, RMVPE and HuBERT for the NPU, about 1.1 GB): tap **받기** (download) in the app's settings. If the download does not work, build them with the converter (`--common`) and copy them over.
-3. Convert your voice model on a PC with [`converter/`](converter/README.md): open `rvc2phone_gui.bat`, add an RVC v2 48 kHz `.pth`, put a few minutes of your own recordings (WAV) in `converter/calib` for the NPU decoder, and press **변환하기** (convert). With USB or wireless debugging on, **폰으로 보내기** (send to phone) puts the voice straight into the app; otherwise import the output folder or zip in the app's settings.
+3. Convert your voice model on a PC with [converter walkthrough](converter/USAGE.md): open `rvc2phone_gui.bat`, add an RVC v2 48 kHz `.pth`, put a few minutes of your own recordings (WAV) in `converter/calib` for the NPU decoder, and press **변환하기** (convert). With USB or wireless debugging on, **폰으로 보내기** (send to phone) puts the voice straight into the app; otherwise import the output folder or zip in the app's settings.
 
 Voice models are not included and are never downloaded by the app. Use only models and voices you have the right to use.
 

@@ -38,13 +38,13 @@ object CommonModels {
             conn.readTimeout = 30_000
             try {
                 val code = conn.responseCode
-                if (code != 200) throw IllegalStateException("내려받기 주소가 HTTP $code 로 답했어요")
+                if (code != 200) throw IllegalStateException(str(R.string.ui_the_download_server_returned_http, code))
                 conn.inputStream.use { input ->
                     part.outputStream().use { out ->
                         val buf = ByteArray(1 shl 16)
                         var got = 0L
                         while (true) {
-                            if (stop()) throw InterruptedException("멈췄어요")
+                            if (stop()) throw InterruptedException(str(R.string.ui_stopped))
                             val n = input.read(buf)
                             if (n < 0) break
                             out.write(buf, 0, n)
@@ -60,9 +60,9 @@ object CommonModels {
             val hash = digest.digest().joinToString("") { "%02x".format(it) }
             if (hash != item.sha256) {
                 part.delete()
-                throw IllegalStateException("${item.name} 파일이 손상됐어요 (체크섬이 달라요)")
+                throw IllegalStateException(str(R.string.ui_is_damaged_checksum_mismatch, item.name))
             }
-            if (!part.renameTo(target)) throw IllegalStateException("${item.name}을(를) 저장하지 못했어요")
+            if (!part.renameTo(target)) throw IllegalStateException(str(R.string.ui_could_not_save, item.name))
             done += item.bytes
         }
     }

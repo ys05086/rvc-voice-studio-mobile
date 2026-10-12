@@ -1,5 +1,8 @@
 # rvc2phone: RVC 목소리 모델을 폰 앱용으로 바꾸기
 
+**Step-by-step:** [English walkthrough](USAGE.md) · [한국어 단계별 안내](USAGE.ko.md)
+
+
 Voice Studio 폰 앱(Android, iPhone)은 RVC 목소리 모델을 ONNX 파일로 나눠서 써요. 이 도구가 `.pth` 모델을 그 파일들로 바꿔 줘요.
 
 ## 창으로 쓰기 (Windows, 권장)
