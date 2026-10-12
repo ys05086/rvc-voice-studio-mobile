@@ -4,6 +4,27 @@
 
 [English README](README.md)
 
+## 화면 미리보기
+
+Galaxy S23+에서 캡처한 한국어 화면입니다. 개인 모델명과 변환 설정은 슬라이더 위치까지 불투명하게 가렸으며, 시스템 상태 표시줄과 웹사이트 내용은 제외했습니다. 앱은 영어도 지원합니다.
+
+<table>
+  <tr>
+    <th>실시간 변환</th>
+    <th>Shizuku 가상 마이크</th>
+    <th>파일 변환</th>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/live-ko.png" width="280" alt="웹 통화와 선택형 Shizuku 기능이 있는 실시간 탭. 개인 설정은 가림"></td>
+    <td><img src="docs/screenshots/virtual-mic-ko.png" width="280" alt="앱 입력 일괄 대체를 선택한 가상 마이크 준비 화면. 모델명은 가림"></td>
+    <td><img src="docs/screenshots/convert-ko.png" width="280" alt="모델명과 개인 음성 설정을 가린 파일 변환 화면"></td>
+  </tr>
+</table>
+
+**웹 통화 조작부** — 사이트 선택, PC 화면 전환, 변환 음성 연결을 보여줍니다. 개인정보 보호를 위해 웹사이트 본문은 제외했으며, 실제 웹 통화 성공을 나타내는 화면은 아닙니다.
+
+<img src="docs/screenshots/web-controls-ko.png" width="700" alt="밝은 보라색 웹 통화 조작부와 변환 음성 연결 버튼. 웹사이트 내용은 제외">
+
 ## 하나의 앱, 두 가지 음성 전달 방식
 
 앱은 **한국어와 영어**를 지원합니다. Shizuku 없이 웹 통화를 사용하거나, Shizuku를 연결해 설치된 앱에 보내는 실험적 가상 마이크를 사용할 수 있습니다. Shizuku는 선택 기능이며 녹음·파일 변환·실시간 미리듣기에는 필요하지 않습니다.

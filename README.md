@@ -4,6 +4,27 @@ Unofficial voice conversion for Android phones, based on [RVC](https://github.co
 
 [한국어 README](README.ko.md)
 
+## Screenshots
+
+Captured on a Galaxy S23+ with the Korean UI. Personal model names and conversion settings are covered with opaque masks, including slider positions. System status bars and website content are omitted. The app also supports English.
+
+<table>
+  <tr>
+    <th>Live conversion</th>
+    <th>Shizuku virtual microphone</th>
+    <th>File conversion</th>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/live-ko.png" width="280" alt="Live tab with web calls and optional Shizuku; personal settings hidden"></td>
+    <td><img src="docs/screenshots/virtual-mic-ko.png" width="280" alt="Virtual microphone ready to start, with all-app input replacement enabled and the model name hidden"></td>
+    <td><img src="docs/screenshots/convert-ko.png" width="280" alt="File conversion controls with model and personal voice settings hidden"></td>
+  </tr>
+</table>
+
+**Web call controls** — site selection, desktop view and converted-voice connection. The website itself is excluded for privacy; this image is not a claim of a verified web call.
+
+<img src="docs/screenshots/web-controls-ko.png" width="700" alt="Lavender web call toolbar and converted-voice connection button; no website content">
+
 ## One app, two ways to send your voice
 
 The UI now supports **English and Korean**. Use web calls without Shizuku, or connect Shizuku to use the experimental virtual microphone with installed apps. Shizuku is optional; recording, file conversion and local live monitoring work without it.
