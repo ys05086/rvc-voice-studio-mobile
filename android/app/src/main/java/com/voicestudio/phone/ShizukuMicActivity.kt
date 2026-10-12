@@ -24,6 +24,8 @@ import java.io.File
 import java.util.Locale
 import kotlin.concurrent.thread
 import kotlin.math.log10
+import kotlin.math.roundToInt
+import org.json.JSONObject
 
 /** Phone-only control surface. Technical details stay behind a disclosure. */
 class ShizukuMicActivity : Activity() {
@@ -203,6 +205,8 @@ class ShizukuMicActivity : Activity() {
         voiceRow.addView(voiceName, LinearLayout.LayoutParams(0, -2, 1f)); voiceRow.addView(text(str(R.string.ui_change), 13f, purple, true))
         voiceCard.addView(voiceRow)
         voiceCard.space(5); voiceCard.addView(text(str(R.string.ui_uses_the_saved_pitch_and_formant_settings), 11f, muted))
+        voiceCard.space(10)
+        voiceCard.addView(button(str(R.string.ui_voice_live_settings)) { showVoiceSettings() }, LinearLayout.LayoutParams(-1, dp(46)))
         val diagnostic = text(str(R.string.ui_show_processing_details), 12f, muted).apply { setPadding(dp(4), dp(8), 0, dp(8)) }
         metrics = text("", 12f, muted).apply { visibility = View.GONE; setPadding(dp(4), dp(8), dp(4), dp(8)) }
         diagnostic.setOnClickListener {
@@ -301,6 +305,54 @@ class ShizukuMicActivity : Activity() {
                 selectedModel = models[which]; localError = null; saveSelection(); updateSelection(); dialog.dismiss()
             }.setNegativeButton(str(R.string.ui_close), null).show()
     }
+    private fun showVoiceSettings() {
+        val model = File(getExternalFilesDir(null), "models").listFiles()
+            ?.firstOrNull { it.isDirectory && it.name == selectedModel } ?: return
+        val file = File(model, "settings.json")
+        val body = column().apply { setPadding(dp(20), dp(8), dp(20), dp(16)) }
+        body.addView(text(str(R.string.ui_virtual_settings_help), 12f, muted))
+        val controls = LiveSettingsUi(this, prefs, virtualMic = true)
+        fun readVoice(): JSONObject = if (file.isFile) JSONObject(file.readText()) else JSONObject()
+        fun voice(key: String, label: Int, min: Int, max: Int, scale: Double) {
+            controls.slider(body, str(label), min, max, if (scale == 1.0) min.toString() else (min / scale).toString(),
+                if (scale == 1.0) "+$max" else (max / scale).toString(),
+                { (readVoice().optDouble(key, 0.0) * scale).roundToInt() },
+                { value ->
+                    try {
+                        val data = readVoice().put(key, value / scale).toString(1).toByteArray(Charsets.UTF_8)
+                        val atomic = android.util.AtomicFile(file)
+                        val stream = atomic.startWrite()
+                        try { stream.write(data); atomic.finishWrite(stream) }
+                        catch (e: Throwable) { atomic.failWrite(stream); throw e }
+                    } catch (e: Exception) { showError(e.message ?: str(R.string.ui_check_connection)) }
+                }, { value -> if (scale == 1.0) String.format(Locale.US, str(R.string.ui_semitones_2), value)
+                    else String.format(Locale.US, "%.1f", value / scale) })
+        }
+        try {
+            voice("pitch", R.string.ui_pitch_relative_to_your_voice, -24, 24, 1.0)
+            voice("formant", R.string.ui_formant_voice_texture, -20, 20, 10.0)
+        } catch (e: Exception) { showError(e.message ?: str(R.string.ui_check_connection)); return }
+        controls.outputGain(body)
+        controls.timing(body)
+        val scroll = ScrollView(this).apply { addView(body) }
+        val dialog = AlertDialog.Builder(this).setTitle(str(R.string.ui_voice_live_settings) + " · " + model.name)
+            .setView(scroll).setNegativeButton(str(R.string.ui_close), null)
+        if (ShizukuMicController.active) dialog.setPositiveButton(str(R.string.ui_apply_restart)) { _, _ ->
+            ShizukuMicController.stop()
+            val deadline = SystemClock.elapsedRealtime() + 15000
+            val restart = object : Runnable {
+                override fun run() {
+                    if (isFinishing || isDestroyed) return
+                    if (!ShizukuMicController.active && !VirtualMicSession.isActive) begin()
+                    else if (SystemClock.elapsedRealtime() < deadline) ui.postDelayed(this, 200)
+                    else showError(str(R.string.ui_restart_after_stopping))
+                }
+            }
+            ui.post(restart)
+        }
+        dialog.show()
+    }
+
     private fun showError(message: String) { localError = message; render() }
     private fun launch(pkg: String) {
         val intent = packageManager.getLaunchIntentForPackage(pkg)
@@ -348,7 +400,7 @@ class ShizukuMicActivity : Activity() {
         primary.text = if (active) str(R.string.ui_stop_virtual_mic) else str(R.string.ui_start_virtual_mic)
         primary.isEnabled = active || (!VirtualMicSession.isActive && selectedModel.isNotEmpty())
         primary.alpha = if (primary.isEnabled) 1f else .45f
-        profile.isEnabled = !active; targetCard.alpha = if (active) .75f else 1f; voiceCard.alpha = targetCard.alpha
+        profile.isEnabled = !active; targetCard.alpha = if (active) .75f else 1f; voiceCard.alpha = 1f
         allAppsSwitch.isEnabled = !active
         val meter = if (stream) VirtualMicSession.meter else VirtualMicSession.Meter()
         fun showLevel(value: Float, bar: ProgressBar, label: TextView) {

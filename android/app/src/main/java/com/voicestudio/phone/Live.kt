@@ -11,6 +11,19 @@ import kotlin.math.tanh
 
 /** Realtime settings, phone-wide. Frames are 10 ms. The iPhone's working values: block 18-20, context 100-131,
  *  crossfade 8, cushion 0.06-0.08 s. */
+object LivePreferences {
+    /** Shared defaults use the virtual microphone's tested 270 ms blocks. Saved values are preserved. */
+    fun read(virtualMic: Boolean = false, getInt: (String, Int) -> Int): LiveParams {
+        val block = getInt("live_block", 27).coerceIn(15, 50)
+        val fade = getInt("live_crossfade", 8).coerceIn(4, 12)
+        return LiveParams(block = block,
+            context = getInt("live_context", LiveParams.defaultContext(block, fade)).coerceIn(0, LiveParams.MAX_CONTEXT),
+            crossfade = fade, cushion = getInt("live_cushion_cs", 6).coerceIn(2, 20) / 100.0,
+            thresholdDb = getInt("live_threshold_db", -60).coerceIn(-80, -30).toDouble(),
+            gainDb = getInt("live_gain_db", 12).coerceIn(-12, 24).toDouble(), skipQuiet = virtualMic)
+    }
+}
+
 data class LiveParams(
     val block: Int = 20,          // new audio per step: the converted voice comes out in pieces this long
     val context: Int = 100,       // past audio the content and pitch models see with each step

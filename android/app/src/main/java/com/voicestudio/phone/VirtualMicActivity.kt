@@ -118,17 +118,18 @@ object VirtualMicSession {
             val settings = Rvc.Settings(n("pitch",0.0), n("formant",0.0), n("low_pitch_ratio",1.0), n("low_pitch_knee",120.0),
                 n("high_pitch_ratio",1.0), n("high_pitch_knee",260.0), n("unvoiced_keep",1.0) != 0.0,
                 n("intonation_expand",0.0) != 0.0, n("intonation_ratio",1.15), n("rms_mix_rate",0.0))
-            val block = intent.getIntExtra("block",27).also { require(it in 15..50) }
+            val saved = LivePreferences.read(virtualMic = true, getInt = prefs::getInt)
+            val block = intent.getIntExtra("block",saved.block).also { require(it in 15..50) }
             val inputDb = intent.getFloatExtra("input_gain_db",12f).also { require(it in 0f..36f) }
-            val threshold = intent.getFloatExtra("threshold_db",-60f).also { require(it in -120f..-30f) }
-            val outputDb = intent.getFloatExtra("gain_db",12f).also { require(it in -12f..36f) }
-            val params = LiveParams(block = block,
-                context = intent.getIntExtra("context", prefs.getInt("live_context", LiveParams.defaultContext(block))), thresholdDb = threshold.toDouble(), gainDb = outputDb.toDouble(),
+            val threshold = intent.getFloatExtra("threshold_db",saved.thresholdDb.toFloat()).also { require(it in -120f..-30f) }
+            val outputDb = intent.getFloatExtra("gain_db",saved.gainDb.toFloat()).also { require(it in -12f..36f) }
+            val params = saved.copy(block = block,
+                context = intent.getIntExtra("context", prefs.getInt("live_context", LiveParams.defaultContext(block, saved.crossfade))), thresholdDb = threshold.toDouble(), gainDb = outputDb.toDouble(),
                 skipQuiet = !intent.getBooleanExtra("no_quiet_skip",false))
             val dec = if (File(model,"model.dec.w8a16.onnx").isFile) "model.dec.w8a16.onnx" else "model.dec.onnx"
             val threads = intent.getIntExtra("threads",1).also { require(it in 1..8) }
             android.system.Os.setenv("ADSP_LIBRARY_PATH", "${context.applicationInfo.nativeLibraryDir};/system/lib/rfsa/adsp;/system/vendor/lib/rfsa/adsp;/dsp", true)
-            log("CONFIG model=${model.name} block_ms=${block*10} context_ms=${params.context*10} window_ms=${params.window(null)*10} input_gain_db=$inputDb output_gain_db=${params.gainDb} decoder=$dec threads=$threads bypass=false")
+            log("CONFIG model=${model.name} block_ms=${block*10} context_ms=${params.context*10} window_ms=${params.window(null)*10} crossfade_ms=${params.crossfade*10} cushion_ms=${(params.cushion*1000).roundToInt()} threshold_db=${params.thresholdDb} input_gain_db=$inputDb output_gain_db=${params.gainDb} decoder=$dec threads=$threads bypass=false")
             engine = Rvc(File(base,"common"), model, threads, "qnn_htp", dec, "qnn_htp",
                 live=Rvc.LiveShape(block,params.tail,settings.formant,params.window(null)))
             log("OPTIMIZATION fixed_formant=${settings.formant} decoder_frames=${engine.decFrames} skip_quiet=${params.skipQuiet}")
@@ -141,7 +142,8 @@ object VirtualMicSession {
                 warmupMaxMs=max(warmupMaxMs,(System.nanoTime()-begun)/1e6)
             }
             // Quiet blocks finish early; retain room for a full inference when speech begins.
-            val startDelayMs=(block*10+warmupMaxMs+80).roundToInt().coerceIn(block*10+80,1500)
+            val bufferMs = (params.cushion * 1000).roundToInt() + 20
+            val startDelayMs=(block*10+warmupMaxMs+bufferMs).roundToInt().coerceIn(block*10+bufferMs,1500)
             core.reset()
             if (!running) throw InterruptedException()
             val port = intent.getIntExtra("virtual_mic_port",0).also { require(it in 1024..65535) }

@@ -137,6 +137,8 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         if (!busy) refreshModels()
+        sharedLiveControls?.refresh()
+        liveGainBar?.progress = prefs.getInt("live_gain_db", 12) + 12
         if (recorder == null) refreshRecordings()  // realtime recordings may have been saved from the notification
         if (LiveSession.engine != null) { ui.removeCallbacks(liveTicker); ui.post(liveTicker) }  // back from the notification
     }
@@ -1008,10 +1010,9 @@ class MainActivity : Activity() {
     }
 
     /** Realtime settings, phone-wide; block, crossfade, cushion and threshold apply at the next start. */
-    private fun liveParams() = LiveParams(block = prefs.getInt("live_block", 25), context = prefs.getInt("live_context",
-        LiveParams.defaultContext(prefs.getInt("live_block", 25), prefs.getInt("live_crossfade", 8))),
-        crossfade = prefs.getInt("live_crossfade", 8), search = 1, cushion = prefs.getInt("live_cushion_cs", 6) / 100.0,
-        thresholdDb = prefs.getInt("live_threshold_db", -60).toDouble(), gainDb = prefs.getInt("live_gain_db", 12).toDouble())
+    private fun liveParams() = LivePreferences.read(getInt = prefs::getInt)
+    private var sharedLiveControls: LiveSettingsUi? = null
+    private var liveGainBar: SeekBar? = null
 
     private fun card(parent: LinearLayout) = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
@@ -1089,6 +1090,7 @@ class MainActivity : Activity() {
             LiveSession.engine?.setGain((p - 12).toDouble())
             if (done) prefs.edit().putInt("live_gain_db", p - 12).apply()
         })
+        liveGainBar = gain
         gain.progress = prefs.getInt("live_gain_db", 12) + 12
         val pitchValue = valueText()
         val pitch = sliderRow(voice, str(R.string.ui_pitch_relative_to_your_voice), pitchValue, "−24", "+24", 48)
@@ -1116,27 +1118,7 @@ class MainActivity : Activity() {
         header.setOnClickListener { setOpen(body.visibility != View.VISIBLE) }
         more.addView(header)
         more.addView(body)
-        fun intSlider(key: String, label: String, default: Int, min: Int, max: Int, minLabel: String, maxLabel: String, show: (Int) -> String) {
-            val value = valueText()
-            val bar = sliderRow(body, label, value, minLabel, maxLabel, max - min)
-            bar.setOnSeekBarChangeListener(slider { p, done ->
-                value.text = show(p + min)
-                if (done) { prefs.edit().putInt(key, p + min).apply(); showLive() }
-            })
-            bar.progress = prefs.getInt(key, default) - min
-            value.text = show(bar.progress + min)
-        }
-        val seconds = { v: Int -> String.format(Locale.US, str(R.string.ui_s), v / 100.0) }
-        intSlider("live_block", str(R.string.ui_block_audio_converted_per_step), 25, 15, 50, str(R.string.ui_faster), str(R.string.ui_more_headroom), seconds)
-        intSlider("live_context", str(R.string.ui_additional_context),
-            LiveParams.defaultContext(prefs.getInt("live_block", 25), prefs.getInt("live_crossfade", 8)),
-            0, LiveParams.MAX_CONTEXT, "0", "3.00", seconds)
-        body.addView(TextView(this).apply {
-            text = str(R.string.ui_additional_context_help); textSize = 11f; setTextColor(getColor(R.color.muted))
-        })
-        intSlider("live_crossfade", str(R.string.ui_crossfade), 8, 4, 12, "0.04", "0.12", seconds)
-        intSlider("live_cushion_cs", str(R.string.ui_output_buffer_reduce_dropouts), 6, 2, 20, "0.02", "0.20", seconds)
-        intSlider("live_threshold_db", str(R.string.ui_silence_threshold), -60, -80, -30, "−80 dB", "−30 dB") { "$it dB" }
+        sharedLiveControls = LiveSettingsUi(this, prefs, changed = { showLive() }).also { it.timing(body) }
         switchRow(body, str(R.string.ui_split_decoder_npu_bit_cpu), str(R.string.ui_can_sound_smoother_but_is_slower_needs), "live_split")
         switchRow(body, str(R.string.ui_play_through_speaker), str(R.string.ui_converted_audio_may_feed_back_into_the), "live_speaker")
         switchRow(body, str(R.string.ui_bypass_conversion_diagnostics), str(R.string.ui_play_the_original_mic_audio_without_the), "live_bypass")

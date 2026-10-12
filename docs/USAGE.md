@@ -41,7 +41,9 @@ The compute-device settings apply to file conversion and this live mode. Unsuppo
 
 ### Additional context
 
-In **Live → Live settings**, set **Additional context** from 0 to 3 seconds. This is past audio analyzed together with each new block, not a timer or a fixed amount added to call latency. More history may improve consistency but also increases processing and initial buffering; reduce it if processing cannot keep up. The value is shared by both modes and applies when you next start conversion. Before you change it, the app keeps the previous 1.6-second total analysis window. Internally the window is rounded up to 20 ms.
+In **Live → Advanced settings** or **Virtual mic → Voice and live settings**, set **Additional context** from 0 to 3 seconds. This is past audio analyzed together with each new block, not a timer or a fixed amount added to call latency. More history may improve consistency but also increases processing and initial buffering; reduce it if processing cannot keep up. The value is shared by both modes and applies when you next start conversion. Before you change it, the app keeps the previous 1.6-second total analysis window. Internally the window is rounded up to 20 ms.
+
+Open **Voice and live settings** in Virtual mic to adjust the selected voice’s pitch/formant plus output gain, block size, additional context, crossfade, output buffer and silence threshold. Pitch/formant are saved per voice; the remaining values are shared with Live. While running, choose **Apply and restart** to load the new values; microphone forwarding briefly stops during restart. **Close** saves the values for the next start.
 
 ## Web calls without Shizuku
 
