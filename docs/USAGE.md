@@ -61,6 +61,8 @@ Install Shizuku from its [official site](https://shizuku.rikka.app/). The tested
 
 Installing Shizuku is not the same as starting it. This implementation requires Shizuku running as Android's shell user; root-mode Shizuku is not supported.
 
+**Root is not required; a running Shizuku service is required for virtual mic.** Start Shizuku again after every reboot or if its service has stopped. Pairing normally only needs to be done once. While Shizuku remains running, you can start another virtual-mic session without restarting or pairing Shizuku again. Voice Studio's virtual mic must still be turned on for each new session. Recording, file conversion, live monitoring and web calls work without Shizuku.
+
 ### Start a session
 
 1. Stop ordinary Live conversion and any Voice Studio recording.

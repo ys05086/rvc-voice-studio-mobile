@@ -4,9 +4,13 @@ Unofficial voice conversion for Android phones, based on [RVC](https://github.co
 
 [한국어 README](README.ko.md)
 
+**No root required.** To replace microphone input in other installed apps, **Shizuku must be installed and running**, with Voice Studio authorized. Start Shizuku again after every phone reboot or whenever its service stops; you do not need to restart it for every call while it is still running. Then turn on **Virtual microphone** in Voice Studio for your session. [Setup guide](docs/USAGE.md#virtual-microphone-with-shizuku)
+
+Recording, file conversion, local live monitoring and in-app web calls do **not** require Shizuku.
+
 ## Screenshots
 
-Captured on a Galaxy S23+ with the Korean UI. Personal model names and conversion settings are covered with opaque masks, including slider positions. System status bars and website content are omitted. The app also supports English.
+Captured on a Galaxy S23+ with the English UI. Personal model names and conversion settings are covered with opaque masks, including slider positions. System status bars and website content are omitted. See the [Korean README](README.ko.md) for Korean screenshots.
 
 <table>
   <tr>
@@ -15,15 +19,15 @@ Captured on a Galaxy S23+ with the Korean UI. Personal model names and conversio
     <th>File conversion</th>
   </tr>
   <tr>
-    <td><img src="docs/screenshots/live-ko.png" width="280" alt="Live tab with web calls and optional Shizuku; personal settings hidden"></td>
-    <td><img src="docs/screenshots/virtual-mic-ko.png" width="280" alt="Virtual microphone ready to start, with all-app input replacement enabled and the model name hidden"></td>
-    <td><img src="docs/screenshots/convert-ko.png" width="280" alt="File conversion controls with model and personal voice settings hidden"></td>
+    <td><img src="docs/screenshots/live-en.png" width="280" alt="Live tab with web calls and optional Shizuku; personal settings hidden"></td>
+    <td><img src="docs/screenshots/virtual-mic-en.png" width="280" alt="Virtual microphone ready to start, with all-app input replacement enabled and the model name hidden"></td>
+    <td><img src="docs/screenshots/convert-en.png" width="280" alt="File conversion controls with model and personal voice settings hidden"></td>
   </tr>
 </table>
 
 **Web call controls** — site selection, desktop view and converted-voice connection. The website itself is excluded for privacy; this image is not a claim of a verified web call.
 
-<img src="docs/screenshots/web-controls-ko.png" width="700" alt="Lavender web call toolbar and converted-voice connection button; no website content">
+<img src="docs/screenshots/web-controls-en.png" width="360" alt="Lavender web call toolbar and converted-voice connection button; no website content">
 
 ## One app, two ways to send your voice
 
