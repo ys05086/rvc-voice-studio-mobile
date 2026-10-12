@@ -14,6 +14,7 @@ import time
 import uuid
 import wave
 import zipfile
+from model_format import checkpoint_info, read_geometry
 
 HERE = Path(__file__).resolve().parent
 PACKAGE = "com.voicestudio.phone"
@@ -82,24 +83,10 @@ def inspect_checkpoint(path):
     import torch
 
     data = torch.load(str(path), map_location="cpu", weights_only=True)
-    if (
-        not isinstance(data, dict)
-        or "weight" not in data
-        or not isinstance(data.get("config"), (list, tuple))
-        or not data["config"]
-    ):
-        raise WorkflowError("checkpoint")
-    version, rate, pitch = (
-        data.get("version", "v1"),
-        data["config"][-1],
-        data.get("f0", 1),
-    )
-    return dict(
-        version=version,
-        rate=rate,
-        pitch=pitch,
-        supported=version == "v2" and rate == 48000 and pitch == 1,
-    )
+    try:
+        return checkpoint_info(data)
+    except (ValueError, TypeError) as error:
+        raise WorkflowError("checkpoint") from error
 
 
 def adb_path():
@@ -259,6 +246,9 @@ def validate_voice(out, name, gpu=False, npu=False, archive=False):
     safe_name(name)
     folder = Path(out) / name
     required = required_voice(name, gpu, npu)
+    read_geometry(folder)
+    if archive or (folder / "model.json").exists():
+        required.append("model.json")
     missing = [part for part in required if not present(folder / part)]
     if missing:
         raise WorkflowError("incomplete", ", ".join(missing))
@@ -426,9 +416,13 @@ def transfer(serial, voices, out, with_common, emit, call=adb):
     import shlex
 
     files = []
+    min_version = 2
     for voice in voices:
         validate_voice(out, voice.name)
         folder = out / voice.name
+        min_version = max(min_version, read_geometry(folder)["min_android_version_code"])
+        if present(folder / "model.json"):
+            files.append((folder / "model.json", f"{voice.name}.model.json"))
         for part in (
             "enc.onnx",
             "dec.onnx",
@@ -446,6 +440,11 @@ def transfer(serial, voices, out, with_common, emit, call=adb):
             raise WorkflowError("common_required", ", ".join(missing))
     if "package:" not in call("-s", serial, "shell", "pm", "path", PACKAGE):
         raise WorkflowError("app_missing")
+    if min_version > 2:
+        package_info = call("-s", serial, "shell", "dumpsys", "package", PACKAGE)
+        version = re.search(r"\bversionCode=(\d+)", package_info)
+        if not version or int(version[1]) < min_version:
+            raise WorkflowError("app_update_required")
     if with_common:
         have = call(
             "-s", serial, "shell", f"ls {REMOTE}/common 2>/dev/null || true"

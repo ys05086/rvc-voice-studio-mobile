@@ -21,7 +21,16 @@ data class LiveParams(
     val gainDb: Double = 12.0,    // output boost; the input follows a quiet, unprocessed microphone
     val skipQuiet: Boolean = false, // skip inference only after the ENTIRE context is below the existing gate
 ) {
-    /** Frames HuBERT, RMVPE and enc see each step; the NPU's fixed window, when there is one, sets the context. */
+    init { require(context in 0..MAX_CONTEXT) }
+
+    companion object {
+        const val MAX_CONTEXT = 300
+        // Preserve the old 1.6 s analysis window until the user changes this setting.
+        fun defaultContext(block: Int, crossfade: Int = 8, search: Int = 1) =
+            max(0, Rvc.REALTIME_WINDOW - block - crossfade - search)
+    }
+
+    /** Frames analyzed per step, including history, overlap and the new block. */
     fun window(fixed: Int?): Int {
         var c = if (fixed != null) max(0, fixed - crossfade - search - block) else context
         if ((c + crossfade + search + block) % 2 == 1) c += 1  // HuBERT steps in 20 ms

@@ -48,6 +48,7 @@ STAGES = {
     "archive": ("ZIP 생성·검증", "Creating/verifying ZIP"),
 }
 ERRORS = {
+    "app_update_required": ("32kHz 모델을 보내려면 폰 앱을 0.4.1 이상으로 업데이트하세요.", "Update the phone app to 0.4.1 or later before sending a 32 kHz model."),
     "bad_name": (
         "이름에는 문자·숫자·밑줄·하이픈을 사용하세요. 예약된 이름은 쓸 수 없어요.",
         "Use letters, numbers, underscores or hyphens. Reserved names cannot be used.",
@@ -327,8 +328,8 @@ class App(tk.Tk):
         c = self.card(self.pages[0], "목소리 모델 (.pth)", "Voice models (.pth)")
         self.label(
             c,
-            "RVC v2 · 48 kHz · 음높이(f0) 있는 추론용 모델을 선택하세요. 32/40 kHz는 아직 지원하지 않습니다.",
-            "Choose RVC v2, 48 kHz inference models with pitch (f0). 32/40 kHz models are not supported yet.",
+            "RVC v2 · 32/48 kHz · 음높이(f0) 있는 추론용 모델을 선택하세요. 32kHz 모델은 Android 앱 0.4.1 이상이 필요합니다. 40kHz는 아직 지원하지 않습니다.",
+            "Choose RVC v2, 32/48 kHz inference models with pitch (f0). 32 kHz models require Android app 0.4.1 or later. 40 kHz is not supported yet.",
             muted=True,
         )
         self.model_list = tk.Listbox(

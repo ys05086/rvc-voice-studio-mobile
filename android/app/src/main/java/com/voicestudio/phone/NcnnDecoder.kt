@@ -4,7 +4,7 @@ import java.io.File
 
 /**
  * The voice decoder on ncnn: the GPU through Vulkan in 32 bits (fp16 off), or ncnn's CPU path when there is no GPU.
- * The graph (make_ncnn.py) takes fixed pieces of [Rvc.DEC_FRAMES] frames: z [192 * frames], sine [frames * 480].
+ * The graph takes z [192 * frames], sine [frames * native hop]: 320 for 32 kHz, 480 for 48 kHz.
  */
 class NcnnDecoder(param: File, model: File, gpu: Boolean, threads: Int) : AutoCloseable {
     private var handle = nativeCreate(param.path, model.path, gpu, threads)

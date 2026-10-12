@@ -9,7 +9,7 @@ It also writes the decoder in two pieces, NAME.dec_a.onnx (the first three upsam
 which survive 16-bit: the phone runs them on the NPU) and NAME.dec_b.onnx (the last stage and the output layer,
 which do not: they stay 32-bit on the GPU). Measured on the PC, 16 bits up to there changed the spectrum by
 0.07-0.17 dB, the last stage alone by 0.6-0.8 dB and the output layer alone by 3.4 dB.
-Only RVC v2 models at 48 kHz with pitch (f0) work for now; v1, 40k/32k and no-pitch models are refused.
+RVC v2 models at 32 or 48 kHz with pitch (f0) are supported; v1, 40k and no-pitch models are refused.
 
 For Android's NPU it also makes NAME.dec.w8a16.onnx: the decoder with 8-bit weights and 16-bit activations, which
 sounds like the 32-bit decoder at the NPU's speed (the app uses it when it is there). That needs a few minutes of
@@ -285,17 +285,20 @@ class DecoderB(Decoder):
 
 def load_voice(path):
     from rvc.models import SynthesizerTrnMs768NSFsid
+    from model_format import checkpoint_info
     cpt = torch.load(str(path), map_location="cpu", weights_only=True)
     if "weight" not in cpt or "config" not in cpt:
         raise SystemExit(f"{path.name}: not an RVC voice model (a training checkpoint? use the small .pth from weights/)")
-    if cpt.get("version", "v1") != "v2" or cpt.get("f0", 1) != 1 or cpt["config"][-1] != 48000:
+    if not checkpoint_info(cpt)["supported"]:
         raise SystemExit(f"{path.name}: version {cpt.get('version', 'v1')}, {cpt['config'][-1]} Hz, pitch {cpt.get('f0', 1)}; "
-                         "only RVC v2 48 kHz models with pitch are supported for now")
+                         "only RVC v2 32/48 kHz models with pitch and standard decoder geometry are supported")
+    cpt["config"][-1] = checkpoint_info(cpt)["rate"]
     cpt["config"][-3] = cpt["weight"]["emb_g.weight"].shape[0]
     net_g = SynthesizerTrnMs768NSFsid(*cpt["config"], is_half=False)
     del net_g.enc_q
     net_g.load_state_dict(cpt["weight"], strict=False)
     net_g.remove_weight_norm()
+    net_g.sample_rate = cpt["config"][-1]
     return net_g.float().eval().requires_grad_(False)
 
 
@@ -327,6 +330,10 @@ def traceable_attention():
 
 
 def export_voice(out, name, net_g):
+    import math
+    from model_format import geometry
+    spec = geometry(net_g.sample_rate, math.prod(net_g.upsample_rates[:SPLIT]))
+    hop = spec["hop_length"]
     traceable_attention()
     T = 300
     phone, pitch, noise = torch.randn(1, T, 768), torch.randint(1, 255, (1, T)), torch.randn(1, 192, T)
@@ -341,15 +348,16 @@ def export_voice(out, name, net_g):
         for t in (37, 1702):  # other lengths than the traced one
             feeds = {"phone": torch.randn(1, t, 768), "pitch": torch.randint(1, 255, (1, t)), "noise": torch.randn(1, 192, t)}
             check(f"{name}.enc T={t}", enc(**feeds), path, feeds, 1e-3)
-    sine = torch.randn(1, T * 480, 1) * 0.1
+    sine = torch.randn(1, T * hop, 1) * 0.1
     path = out / f"{name}.dec.onnx"
     with torch.no_grad():
         torch.onnx.export(dec, (z, sine), str(path), input_names=["z", "sine"], output_names=["audio"], opset_version=OPSET,
                           dynamic_axes={"z": {2: "n"}, "sine": {1: "samples"}, "audio": {2: "samples"}}, dynamo=False)
         check(f"{name}.dec", dec(z, sine), path, {"z": z, "sine": sine}, 1e-3)
-        z2, sine2 = torch.randn(1, 192, 57), torch.randn(1, 57 * 480, 1) * 0.1
+        z2, sine2 = torch.randn(1, 192, 57), torch.randn(1, 57 * hop, 1) * 0.1
         check(f"{name}.dec n=57", dec(z2, sine2), path, {"z": z2, "sine": sine2}, 1e-3)
     export_split(out, name, net_g, z, sine)
+    (out / "model.json").write_text(json.dumps(spec, indent=2), encoding="utf-8")
     return path
 
 
@@ -388,7 +396,7 @@ def npu_decoder(args, folder, name, dec):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("voice", nargs="?", type=Path, help="RVC v2 48 kHz voice model (.pth)")
+    parser.add_argument("voice", nargs="?", type=Path, help="RVC v2 32/48 kHz voice model (.pth)")
     parser.add_argument("--name", help="name in the app (default: the file name)")
     parser.add_argument("--out", type=Path, default=HERE / "out", help="output folder (default: out/ next to this script)")
     parser.add_argument("--common", action="store_true", help="also (or only) build hubert.onnx and rmvpe.onnx")

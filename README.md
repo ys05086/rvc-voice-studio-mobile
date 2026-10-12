@@ -146,7 +146,7 @@ Realtime, one step per block (a step must finish within its block):
 
 1. Install the APK from the Releases page (or build it, see below).
 2. Get the shared models (HuBERT, RMVPE and HuBERT for the NPU, about 1.1 GB): tap **받기** (download) in the app's settings. If the download does not work, build them with the converter (`--common`) and copy them over.
-3. Follow the [illustrated converter walkthrough](converter/USAGE.md): open `rvc2phone_gui.bat`, choose English or Korean, and add an RVC v2 48 kHz `.pth`. For the NPU decoder, select **Snapdragon · CPU + GPU + NPU** under **Prepare** and choose a few minutes of calibration WAVs. Click **Start conversion**, then select completed results under **Send to phone** for USB/wireless transfer. Without debugging, import the output folder or ZIP in the app.
+3. Follow the [illustrated converter walkthrough](converter/USAGE.md): open `rvc2phone_gui.bat`, choose English or Korean, and add an RVC v2 32/48 kHz `.pth`. For the NPU decoder, select **Snapdragon · CPU + GPU + NPU** under **Prepare** and choose a few minutes of calibration WAVs. Click **Start conversion**, then select completed results under **Send to phone** for USB/wireless transfer. Without debugging, import the output folder or ZIP in the app.
 
 Voice models are not included and are never downloaded by the app. Use only models and voices you have the right to use.
 
@@ -158,7 +158,7 @@ Voice models are not included and are never downloaded by the app. Use only mode
 
 ## Limitations
 
-- Only RVC v2 models at 48 kHz with pitch (f0) are supported for now.
+- Android supports RVC v2 models at 32 or 48 kHz with pitch (f0). 32 kHz requires app 0.4.1 or later and the complete model folder, including `model.json`. iOS remains 48 kHz only.
 - Android does not let one app replace another app's microphone, so realtime output goes to your earphones (or the earpiece).
 - Realtime keeps the CPU and NPU busy: phones get warm in long sessions, and a hot CPU can make the voice drop out now and then.
 - The NPU path is tested on one phone so far.

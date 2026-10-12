@@ -23,7 +23,7 @@ Scroll within each tab if a smaller window hides its lower controls. Use the upp
 
 - Install Python 3.10 or later with the Python launcher or Python on PATH. Use a Python version supported by the pinned packages in `requirements.txt`; the working environment used for these tools is Python 3.10.
 - Extract the project to a writable folder. Leave several GB free for dependencies, downloaded weights, model output and temporary files. The first setup and shared-model download require internet access.
-- Prepare an exported **RVC v2, 48 kHz, f0-enabled** voice `.pth`. v1, 32/40 kHz and non-f0 models are not supported. Use the inference model, not a large training checkpoint such as `G_1234.pth`.
+- Prepare an exported **RVC v2, 32/48 kHz, f0-enabled** voice `.pth`. v1, 40 kHz and non-f0 models are not supported. 32 kHz requires Android app 0.4.1 or later; iOS remains 48 kHz only. Use the inference model, not a large training checkpoint such as `G_1234.pth`.
 - For the Snapdragon integer NPU decoder, put a few minutes of the intended speaker's normal voice in WAV files in `converter/calib/`. This is calibration input, not the target voice model. Include different levels and ordinary speech sounds. The GUI asks for usable recordings before starting an NPU conversion; the command-line tool skips the integer decoder when recordings are absent.
 
 ## 2. Open the converter
@@ -67,6 +67,7 @@ out/
   MyVoice/
     MyVoice.enc.onnx
     MyVoice.dec.onnx
+    model.json                # native sample rate; keep with the model
     settings.json
     MyVoice.dec.w8a16.onnx      # optional NPU output
     MyVoice.dec.ncnn.param     # optional GPU output
@@ -131,7 +132,7 @@ For an existing environment, `.\.venv\Scripts\python.exe .\rvc2phone.py --help` 
 
 | Symptom | Check |
 | --- | --- |
-| Model rejected | Exported RVC v2, 48 kHz, f0 model rather than a training checkpoint |
+| Model rejected | Exported RVC v2, 32/48 kHz, f0 model rather than a training checkpoint |
 | No integer decoder | NPU option enabled; usable calibration WAVs; calibration completed in the log |
 | No GPU files | GPU option enabled; pnnx export completed |
 | Phone not listed | ADB installed; USB data cable/debugging approval or correct wireless connection port |

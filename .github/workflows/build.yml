@@ -18,9 +18,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Install numeric test dependency
+        run: python -m pip install numpy==2.2.6
       - name: Check converter workflow and GUI
         working-directory: converter
-        run: python -m unittest -v test_workflow test_gui
+        run: python -m unittest -v test_workflow test_gui test_model_format test_npu_geometry
   android:
     runs-on: ubuntu-latest
     timeout-minutes: 30

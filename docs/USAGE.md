@@ -19,7 +19,7 @@ Web calls are an experimental alternative, not a way to change every installed a
 
 1. Install Voice Studio and open it once.
 2. Open **Settings → Download** to obtain the shared HuBERT and RMVPE models. If downloading fails, create them with the converter's **Common models** option or `--common`.
-3. Follow the [converter walkthrough](../converter/USAGE.md) to turn an RVC v2, 48 kHz, f0 `.pth` into phone model files. The phone does not directly import `.pth`.
+3. Follow the [converter walkthrough](../converter/USAGE.md) to turn an RVC v2, 32/48 kHz, f0 `.pth` into phone model files. The phone does not directly import `.pth`. 32 kHz needs Android 0.4.1 or later and `model.json` alongside the ONNX files; output audio stays 48 kHz.
 4. Import the resulting voice ZIP or folder using **Import**, or use the converter's **Send to phone** function. Select that voice in the app.
 5. Adjust pitch and formant on the Convert tab. Settings are saved per model. Virtual mic reads these settings when starting; restart it to apply later changes.
 6. Allow the microphone when recording or starting live audio. Allow notifications to see background status and the Stop control.
@@ -38,6 +38,10 @@ The UI follows the device language: Korean for Korean, English otherwise. Androi
 Connect headphones, choose a voice, then tap **Start** on the Live tab. This mode plays audio locally; starting it alone does not replace another app's input. Use **Stop** in the app or notification to end it. The optional live recording button saves original and converted takes to the Record tab.
 
 The compute-device settings apply to file conversion and this live mode. Unsupported accelerators may fall back to CPU. If processing is slower than each audio block, increase the block size or use file conversion. Virtual mic currently uses a separate configuration tested on the S23+.
+
+### Additional context
+
+In **Live → Live settings**, set **Additional context** from 0 to 3 seconds. This is past audio analyzed together with each new block, not a timer or a fixed amount added to call latency. More history may improve consistency but also increases processing and initial buffering; reduce it if processing cannot keep up. The value is shared by both modes and applies when you next start conversion. Before you change it, the app keeps the previous 1.6-second total analysis window. Internally the window is rounded up to 20 ms.
 
 ## Web calls without Shizuku
 

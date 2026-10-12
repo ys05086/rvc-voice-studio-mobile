@@ -21,6 +21,7 @@ from pathlib import Path
 import numpy as np
 import onnx
 from onnx import numpy_helper
+from model_format import read_geometry
 
 FRAMES = 200  # Rvc.kt DEC_FRAMES
 
@@ -84,7 +85,8 @@ def check(onnx_path, param, binary):
     import onnxruntime as ort
     rng = np.random.default_rng(0)
     z = rng.standard_normal((1, 192, FRAMES)).astype(np.float32)
-    t = np.arange(FRAMES * 480) / 48000
+    spec = read_geometry(Path(onnx_path).parent)
+    t = np.arange(FRAMES * spec["hop_length"]) / spec["sample_rate"]
     sine = (0.1 * np.sin(2 * np.pi * 180 * t) + 0.003 * rng.standard_normal(t.size)).astype(np.float32)[None, :, None]
     ref = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"]).run(None, {"z": z, "sine": sine})[0].ravel()
     net = ncnn.Net()
@@ -125,12 +127,13 @@ def convert(src, verify=False):
     if not src.name.endswith(".dec.onnx"):
         raise SystemExit("expected <name>.dec.onnx")
     stem = src.name[: -len(".dec.onnx")]
+    hop = read_geometry(src.parent)["hop_length"]
     weight = linear_weight(onnx.load(str(src)))
     pnnx = pnnx_tool()
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp) / "dec.onnx"
         shutil.copy(src, work)
-        run = subprocess.run([pnnx, str(work), f"inputshape=[1,192,{FRAMES}],[1,{FRAMES * 480},1]", "fp16=0"],
+        run = subprocess.run([pnnx, str(work), f"inputshape=[1,192,{FRAMES}],[1,{FRAMES * hop},1]", "fp16=0"],
                              cwd=tmp, capture_output=True, text=True, errors="replace")
         if run.returncode != 0:  # pnnx is chatty: its log only matters when it fails
             print(run.stdout[-3000:], run.stderr[-3000:], sep="\n")

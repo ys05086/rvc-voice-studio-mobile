@@ -41,8 +41,8 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
           private val profileDir: File? = null,
           private val allowFallback: Boolean = false) : AutoCloseable {
     /** A realtime step: [block] new frames, the last [tail] frames of the window decoded (block + crossfade + search). */
-    data class LiveShape(val block: Int, val tail: Int, val fixedFormant: Double? = null) {
-        init { require(fixedFormant == null || (fixedFormant.isFinite() && fixedFormant in -2.0..2.0)) }
+    data class LiveShape(val block: Int, val tail: Int, val fixedFormant: Double? = null, val windowFrames: Int = REALTIME_WINDOW) {
+        init { require(windowFrames >= tail && windowFrames % 2 == 0); require(fixedFormant == null || (fixedFormant.isFinite() && fixedFormant in -2.0..2.0)) }
         val decoderFrames: Int get() = ceil((tail + LIVE_DEC_CONTEXT) *
             (fixedFormant?.let { 2.0.pow(it / 12) } ?: MAX_FORMANT_FACTOR)).toInt()
     }
@@ -57,6 +57,9 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
     )
 
     private val env = OrtEnvironment.getEnvironment()
+    private val modelSpec = ModelSpec.load(modelDir)
+    val modelSampleRate: Int get() = modelSpec.sampleRate
+    private val decoderHop = modelSpec.hopLength
     private val owned = ArrayList<AutoCloseable>()
     private val notices = java.util.concurrent.CopyOnWriteArrayList<String>()
     val fallbackNotice: String? get() = notices.takeIf { it.isNotEmpty() }?.joinToString(" · ")
@@ -73,11 +76,11 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
     val decFrames = live?.decoderFrames ?: DEC_FRAMES
     val timing = DoubleArray(5)
     val window = frontChunk + 320 + 2 * 16000
-    val realtimeWindow: Int? = if (live != null && fixedWindows) REALTIME_WINDOW else null
+    val realtimeWindow: Int? = if (live != null && fixedWindows) live.windowFrames else null
     private val frames = realtimeWindow ?: (window / 160)
     private val hubertSamples = realtimeWindow?.let { it * 160 } ?: window
-    private val rmvpeSamples = if (live != null) StreamState.rmvpeSamples(live.block) else window
-    private val decoderDims get() = if (decFixed) mapOf("n" to decFrames.toLong(), "samples" to decFrames * 480L) else emptyMap()
+    private val rmvpeSamples = if (live != null) min(StreamState.rmvpeSamples(live.block), live.windowFrames * 160) else window
+    private val decoderDims get() = if (decFixed) mapOf("n" to decFrames.toLong(), "samples" to decFrames.toLong() * decoderHop) else emptyMap()
 
     private inner class ModelSession(val name: String, src: File, cpuSrc: File, val backend: String,
                                      private val cache: File?, private val dims: Map<String, Long>,
@@ -245,14 +248,12 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
         val n = ceil(pLen * factor).toInt()
         val zn = Dsp.stretchLinear(z, 192, pLen, n)
         val f0n = Dsp.stretchNearest(f0, n)  // no n/pLen factor: the excitation is built at n frames directly
-        val sine = Dsp.nsfSource(f0n, rng)
+        val sine = Dsp.nsfSource(f0n, rng, upp = decoderHop, sampleRate = modelSampleRate)
         clock.lap(4)
         // a frame more each side for the formant's resampling back to 48 kHz
         var audio = decode(zn, n, sine, max(0, floor(keepFrom * factor).toInt() - 1), min(n, ceil(keepTo * factor).toInt() + 1))
         clock.lap(3)
-        val upp = floor(factor * 480).toInt()
-        if (upp != 480) audio = Dsp.resample(audio.copyOf(min(audio.size, pLen * upp)), upp, 480)
-        return audio.copyOf(pLen * 480).also { clock.lap(4) }
+        return modelSpec.output48(audio, pLen, factor, false).also { clock.lap(4) }
     }
 
     /** Realtime: one 16 kHz window (past context plus the newest audio, a multiple of 320 samples) -> 48 kHz audio for
@@ -272,22 +273,21 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
         val n = ceil(d * factor).toInt()
         val zn = Dsp.stretchLinear(zd, 192, d, n)
         val f0n = Dsp.stretchNearest(f0.copyOfRange(pLen - d, pLen), n)
-        val mark = (advance * factor * 480).roundToInt()
-        val (source, phaseAtMark) = Dsp.nsfSource(f0n, rng, state?.phase ?: 0.0, mark)
+        val mark = (advance * factor * decoderHop).roundToInt()
+        val (source, phaseAtMark) = Dsp.nsfSource(f0n, rng, state?.phase ?: 0.0, mark,
+            upp = decoderHop, sampleRate = modelSampleRate)
         state?.phase = phaseAtMark
         // pad on the left up to the fixed size (that part is context and gets dropped)
         val pad = max(0, fixed - n)
         val zp = if (pad == 0) zn else FloatArray(192 * (n + pad)).also {
             for (c in 0 until 192) System.arraycopy(zn, c * n, it, c * (n + pad) + pad, n)
         }
-        val sp = if (pad == 0) source else FloatArray((n + pad) * 480).also { System.arraycopy(source, 0, it, pad * 480, source.size) }
+        val sp = if (pad == 0) source else FloatArray((n + pad) * decoderHop).also { System.arraycopy(source, 0, it, pad * decoderHop, source.size) }
         clock.lap(4)
         var audio = runDec(zp, n + pad, sp)
-        if (pad > 0) audio = audio.copyOfRange(pad * 480, audio.size)
+        if (pad > 0) audio = audio.copyOfRange(pad * decoderHop, audio.size)
         clock.lap(3)
-        val upp = floor(factor * 480).toInt()
-        if (upp != 480) audio = Dsp.resampleRepeated(audio.copyOf(min(audio.size, d * upp)), upp, 480)  // same size every step
-        audio = audio.copyOf(d * 480)
+        audio = modelSpec.output48(audio, d, factor, true)
         clock.lap(4)
         val keep = (d - min(tail, d)) * 480  // drop the decoder's left context
         return audio.copyOfRange(keep, audio.size)
@@ -349,6 +349,13 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
     }
 
     private fun runDec(z: FloatArray, frames: Int, sine: FloatArray): FloatArray {
+        require(sine.size == frames * decoderHop) { "Decoder excitation length does not match model.json" }
+        return runNativeDec(z, frames, sine).also {
+            require(it.size == frames * decoderHop) { "Decoder output length does not match model.json; reimport the complete model folder" }
+        }
+    }
+
+    private fun runNativeDec(z: FloatArray, frames: Int, sine: FloatArray): FloatArray {
         ncnn?.let { gpu ->
             try { return gpu.decode(z, frames, sine) } catch (failure: Throwable) {
                 if (!allowFallback || !BackendFallback.recoverable(failure)) throw failure
@@ -363,7 +370,7 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
                     decA.run(mapOf("z" to zt, "sine" to st)).use { floats(it[0] as OnnxTensor) }
                 }
             }
-            val length = frames * 240L  // the hidden signal runs at 24 kHz: 240 samples a frame
+            val length = frames.toLong() * modelSpec.splitHiddenHop
             return OnnxTensor.createTensor(env, FloatBuffer.wrap(hidden), longArrayOf(1, hidden.size / length, length)).use { ht ->
                 OnnxTensor.createTensor(env, FloatBuffer.wrap(sine), longArrayOf(1, sine.size.toLong(), 1)).use { st ->
                     decB.run(mapOf("hidden" to ht, "sine" to st)).use { floats(it[0] as OnnxTensor) }
@@ -383,15 +390,15 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
      *  decoder is local, so the pieces join exactly (checked on the PC: frames away from the clip's two ends match a
      *  one-shot decode at >100 dB). */
     private fun decode(z: FloatArray, n: Int, sine: FloatArray, from: Int = 0, to: Int = n): FloatArray {
-        val out = FloatArray(n * 480)
+        val out = FloatArray(n * decoderHop)
         if (!decFixed) {
             val a = max(0, from - DEC_CONTEXT)
             val b = min(n, to + DEC_CONTEXT)
             if (a == 0 && b == n) return runDec(z, n, sine)
             val zz = FloatArray(192 * (b - a))
             for (c in 0 until 192) System.arraycopy(z, c * n + a, zz, c * (b - a), b - a)
-            val y = runDec(zz, b - a, sine.copyOfRange(a * 480, b * 480))
-            System.arraycopy(y, (from - a) * 480, out, from * 480, (to - from) * 480)
+            val y = runDec(zz, b - a, sine.copyOfRange(a * decoderHop, b * decoderHop))
+            System.arraycopy(y, (from - a) * decoderHop, out, from * decoderHop, (to - from) * decoderHop)
             return out
         }
         val hop = DEC_FRAMES - 2 * DEC_CONTEXT
@@ -399,14 +406,14 @@ class Rvc(commonDir: File, private val modelDir: File, private val threads: Int 
         while (start < to) {
             val lo = start - DEC_CONTEXT
             val zz = FloatArray(192 * DEC_FRAMES)
-            val ss = FloatArray(DEC_FRAMES * 480)
+            val ss = FloatArray(DEC_FRAMES * decoderHop)
             val a = max(lo, 0)
             val b = min(lo + DEC_FRAMES, n)
             for (c in 0 until 192) System.arraycopy(z, c * n + a, zz, c * DEC_FRAMES + (a - lo), b - a)
-            System.arraycopy(sine, a * 480, ss, (a - lo) * 480, (b - a) * 480)
+            System.arraycopy(sine, a * decoderHop, ss, (a - lo) * decoderHop, (b - a) * decoderHop)
             val y = runDec(zz, DEC_FRAMES, ss)
             val take = min(hop, to - start)
-            System.arraycopy(y, DEC_CONTEXT * 480, out, start * 480, take * 480)
+            System.arraycopy(y, DEC_CONTEXT * decoderHop, out, start * decoderHop, take * decoderHop)
             start += hop
         }
         return out
@@ -496,7 +503,7 @@ class StreamState(frames: Int, block: Int) {
     /** Raw RMVPE pitch (Hz, 0 = unvoiced) for every frame of the window, before any shaping. */
     val f0 = DoubleArray(frames)
     /** 16 kHz samples RMVPE gets each step. */
-    val samples = rmvpeSamples(block)
+    val samples = min(rmvpeSamples(block), frames * 160)
 
     /** After skipping ahead (or restarting) the kept frames no longer line up: start over. */
     fun reset() {
@@ -589,19 +596,20 @@ object Dsp {
     }
 
     /** SineGen's excitation with a float64 phase: a sine at f0 where voiced plus a little noise. */
-    fun nsfSource(f0: DoubleArray, rng: Random, upp: Int = 480, sineAmp: Double = 0.1, noiseStd: Double = 0.003): FloatArray =
-        nsfSource(f0, rng, 0.0, -1, upp, sineAmp, noiseStd).first
+    fun nsfSource(f0: DoubleArray, rng: Random, upp: Int = 480, sineAmp: Double = 0.1, noiseStd: Double = 0.003,
+                  sampleRate: Int = 48000): FloatArray =
+        nsfSource(f0, rng, 0.0, -1, upp, sineAmp, noiseStd, sampleRate).first
 
     /** The same, starting from `startPhase` (in cycles); also returns the phase just before sample `markAt`, where
      *  the next realtime window starts. */
     fun nsfSource(f0: DoubleArray, rng: Random, startPhase: Double, markAt: Int, upp: Int = 480, sineAmp: Double = 0.1,
-                  noiseStd: Double = 0.003): Pair<FloatArray, Double> {
+                  noiseStd: Double = 0.003, sampleRate: Int = 48000): Pair<FloatArray, Double> {
         val out = FloatArray(f0.size * upp)
         var phase = startPhase
         var marked = startPhase
         var i = 0
         for (f in f0) {
-            val step = f / 48000.0
+            val step = f / sampleRate.toDouble()
             for (k in 0 until upp) {
                 if (i == markAt) marked = phase
                 phase += step

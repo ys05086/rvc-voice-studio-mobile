@@ -695,6 +695,7 @@ class MainActivity : Activity() {
         return when {
             n == "hubert.onnx" || n == "rmvpe.onnx" || n == "hubert.htp.onnx" -> File(commonDir, n)
             model == null -> null
+            n == "model.json" || n.endsWith(".model.json") -> File(model, "model.json")
             n.endsWith(".enc.onnx") -> File(model, "model.enc.onnx")
             n.endsWith(".dec.w8a16.onnx") -> File(model, W8A16)  // the NPU's integer decoder (converter, calib/)
             n.endsWith(".dec.onnx") -> File(model, "model.dec.onnx")
@@ -717,7 +718,7 @@ class MainActivity : Activity() {
     private fun sortLooseFiles(): List<String> {
         val moved = ArrayList<String>()
         val voices = (modelsDir.listFiles { f -> f.isDirectory }?.associateBy { it.name.lowercase() } ?: emptyMap()).toMutableMap()
-        val loose = base.listFiles { f -> f.isFile && (f.name.endsWith(".onnx") || ".ncnn." in f.name || f.name.endsWith(".settings.json")) }
+        val loose = base.listFiles { f -> f.isFile && (f.name.endsWith(".onnx") || ".ncnn." in f.name || f.name.endsWith(".settings.json") || f.name.endsWith(".model.json")) }
             ?: return moved
         // a voice the phone does not have yet: both of its main parts arrived
         val names = loose.map { it.name }.toSet()
@@ -725,6 +726,11 @@ class MainActivity : Activity() {
             val voice = f.name.substringBefore('.')  // as the parts are matched below (no dots in loose voice names)
             if (f.name == "$voice.enc.onnx" && "$voice.dec.onnx" in names && voice.lowercase() !in voices && voice.isNotBlank())
                 voices[voice.lowercase()] = File(modelsDir, voice).apply { mkdirs() }
+        }
+        for ((voice, dir) in voices) {
+            val incoming = loose.filter { it.name.substringBefore('.').lowercase() == voice }
+                .mapNotNull { importTarget(it.name, dir)?.name }.toSet()
+            ModelSpec.obsoleteParts(incoming).forEach { File(dir, it).delete() }
         }
         for (file in loose) {
             val shared = file.name.lowercase() in setOf("hubert.onnx", "rmvpe.onnx", "hubert.htp.onnx")
@@ -813,6 +819,8 @@ class MainActivity : Activity() {
                 val newNcnn = sources.any { it.name.lowercase().contains(".dec.ncnn.") }
                 model?.listFiles { file -> ".qnn_" in file.name || (newNcnn && file.name.startsWith("model.dec.ncnn")) }?.forEach { it.delete() }
                 val todo = sources.mapNotNull { s -> importTarget(s.name, model)?.let { s to it } }
+                if (model != null) ModelSpec.obsoleteParts(todo.map { it.second.name }.toSet())
+                    .forEach { File(model, it).delete() }
                 for ((i, pair) in todo.withIndex()) {
                     val (source, target) = pair
                     ui.post { help.text = str(R.string.ui_importing, i + 1, todo.size, source.name) }
@@ -822,6 +830,7 @@ class MainActivity : Activity() {
                     tmp.renameTo(target)
                 }
                 if (model != null && !File(model, "model.enc.onnx").isFile) throw IllegalStateException(str(R.string.ui_model_enc_onnx_is_missing))
+                if (model != null) ModelSpec.load(model)
                 ui.post {
                     if (model != null) prefs.edit().putString("model", model.name).apply()
                     if (model != null && engineKey.startsWith(model.path)) { engine?.close(); engine = null; engineKey = "" }
@@ -999,7 +1008,8 @@ class MainActivity : Activity() {
     }
 
     /** Realtime settings, phone-wide; block, crossfade, cushion and threshold apply at the next start. */
-    private fun liveParams() = LiveParams(block = prefs.getInt("live_block", 25), context = 100,
+    private fun liveParams() = LiveParams(block = prefs.getInt("live_block", 25), context = prefs.getInt("live_context",
+        LiveParams.defaultContext(prefs.getInt("live_block", 25), prefs.getInt("live_crossfade", 8))),
         crossfade = prefs.getInt("live_crossfade", 8), search = 1, cushion = prefs.getInt("live_cushion_cs", 6) / 100.0,
         thresholdDb = prefs.getInt("live_threshold_db", -60).toDouble(), gainDb = prefs.getInt("live_gain_db", 12).toDouble())
 
@@ -1118,6 +1128,12 @@ class MainActivity : Activity() {
         }
         val seconds = { v: Int -> String.format(Locale.US, str(R.string.ui_s), v / 100.0) }
         intSlider("live_block", str(R.string.ui_block_audio_converted_per_step), 25, 15, 50, str(R.string.ui_faster), str(R.string.ui_more_headroom), seconds)
+        intSlider("live_context", str(R.string.ui_additional_context),
+            LiveParams.defaultContext(prefs.getInt("live_block", 25), prefs.getInt("live_crossfade", 8)),
+            0, LiveParams.MAX_CONTEXT, "0", "3.00", seconds)
+        body.addView(TextView(this).apply {
+            text = str(R.string.ui_additional_context_help); textSize = 11f; setTextColor(getColor(R.color.muted))
+        })
         intSlider("live_crossfade", str(R.string.ui_crossfade), 8, 4, 12, "0.04", "0.12", seconds)
         intSlider("live_cushion_cs", str(R.string.ui_output_buffer_reduce_dropouts), 6, 2, 20, "0.02", "0.20", seconds)
         intSlider("live_threshold_db", str(R.string.ui_silence_threshold), -60, -80, -30, "−80 dB", "−30 dB") { "$it dB" }
@@ -1183,13 +1199,13 @@ class MainActivity : Activity() {
         updateConvertButton()
         thread {
             try {
-                val key = "${dir.path}|$ep|$liveDec|$front|$threads|${params.block}|${params.tail}"
+                val key = "${dir.path}|$ep|$liveDec|$front|$threads|${params.block}|${params.tail}|${params.window(null)}"
                 if (LiveSession.rvcKey != key) {
                     LiveSession.rvc?.close()
                     LiveSession.rvc = null
                     LiveSession.rvcKey = ""
                     liveMessage = str(R.string.ui_preparing_model_the_first_run_may_take)
-                    LiveSession.rvc = Rvc(commonDir, dir, threads, ep, liveDec, front, live = Rvc.LiveShape(params.block, params.tail), allowFallback = true)
+                    LiveSession.rvc = Rvc(commonDir, dir, threads, ep, liveDec, front, live = Rvc.LiveShape(params.block, params.tail, windowFrames = params.window(null)), allowFallback = true)
                     LiveSession.rvcKey = key
                 }
                 val e = LiveEngine(applicationContext, LiveSession.rvc!!, params, settings, speaker, bypass, base)
@@ -1398,7 +1414,7 @@ class MainActivity : Activity() {
                 val x = AudioIo.decode(this, Uri.fromFile(file))
                 val t0 = System.nanoTime()
                 Rvc(commonDir, dir, threads, ep, decFile, front, seed = hooks.getIntExtra("seed", 0).toLong(),
-                    live = Rvc.LiveShape(params.block, params.tail),
+                    live = Rvc.LiveShape(params.block, params.tail, windowFrames = params.window(null)),
                     cpuFixedWindows = hooks.getBooleanExtra("fixed_windows", false),
                     profileDir = if (hooks.getBooleanExtra("profile", false)) File(base, "profiles").apply { mkdirs() } else null).use { rvc ->
                     log(String.format(Locale.US, "stream engine ready in %.1f s: front %s, decoder %s (%s)",

@@ -20,6 +20,8 @@ def output(root, name, gpu=False, npu=False):
         (folder / part).write_text(
             "{}" if part == "settings.json" else "model", encoding="utf-8"
         )
+    from model_format import geometry
+    (folder / "model.json").write_text(json.dumps(geometry()), encoding="utf-8")
     with zipfile.ZipFile(root / f"{name}.zip", "w") as archive:
         for file in folder.iterdir():
             archive.write(file, f"{name}/{file.name}")
@@ -282,7 +284,7 @@ class WorkflowTests(unittest.TestCase):
             lambda *_: None,
             adb,
         )
-        self.assertEqual(count, 3)
+        self.assertEqual(count, 4)  # encoder, decoder, geometry, settings
         self.assertTrue(any("Voice.settings.json" in str(c) for c in calls))
         self.assertFalse(any("/models/" in str(c) for c in calls))
 

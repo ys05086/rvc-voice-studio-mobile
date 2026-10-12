@@ -5,6 +5,27 @@ import org.junit.Test
 import kotlin.math.pow
 
 class LiveOptimizationTest {
+    @Test fun additionalContextChangesAnalysisButNotOutputBlockOrDecoderShape() {
+        for (block in listOf(15, 20, 25, 27, 50)) for (fade in listOf(4, 8, 12)) {
+            val legacy = LiveParams(block = block, crossfade = fade, context = LiveParams.defaultContext(block, fade))
+            assertEquals(160, legacy.window(null))
+            val decoder = Rvc.LiveShape(block, legacy.tail).decoderFrames
+            for (context in listOf(0, 1, 20, 100, 300)) {
+                val params = legacy.copy(context = context)
+                val frames = params.window(null)
+                assertEquals(0, frames % 2)
+                assertTrue(frames - params.tail in context..context + 1)
+                val shape = Rvc.LiveShape(block, params.tail, windowFrames = frames)
+                assertEquals(decoder, shape.decoderFrames)
+                assertEquals(frames, params.window(shape.windowFrames))
+                val state = StreamState(frames, block)
+                assertTrue(state.samples <= frames * 160)
+                assertEquals(minOf(StreamState.rmvpeSamples(block), frames * 160), state.samples)
+                assertEquals(frames, state.f0.size)
+            }
+        }
+    }
+
     @Test fun rollingResamplerMatchesFullCalculationAtBothEdgesAndAfterDiscontinuity() {
         val random=java.util.Random(42)
         val all=FloatArray(48000*5) { (random.nextDouble()-.5).toFloat() }

@@ -255,6 +255,8 @@ def export_common(out, file_lengths):
 def export_voice(out, name, voice, file_lengths):
     work = Path(tempfile.mkdtemp())
     net_g = base.load_voice(voice)
+    if net_g.sample_rate != 48000:
+        raise ValueError("Static/iOS export supports 48 kHz only; use rvc2phone.py for Android 32 kHz models")
     base.traceable_attention()
     base.export_voice(work, name, net_g)  # the variable-length models, to compare against
     enc = StaticEncoder(net_g).eval()

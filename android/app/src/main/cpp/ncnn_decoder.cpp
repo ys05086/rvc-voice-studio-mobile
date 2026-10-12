@@ -72,7 +72,7 @@ Java_com_voicestudio_phone_NcnnDecoder_nativeDecode(JNIEnv* env, jclass, jlong h
     auto* d = reinterpret_cast<Decoder*>(handle);
     const jsize nz = env->GetArrayLength(z);
     const jsize ns = env->GetArrayLength(sine);
-    if (nz != 192 * frames || ns != frames * 480) return nullptr;
+    if (frames <= 0 || nz != 192LL * frames || (ns != frames * 480LL && ns != frames * 320LL)) return nullptr;
     std::vector<float> zb(nz), sb(ns);
     env->GetFloatArrayRegion(z, 0, nz, zb.data());
     env->GetFloatArrayRegion(sine, 0, ns, sb.data());
@@ -86,6 +86,7 @@ Java_com_voicestudio_phone_NcnnDecoder_nativeDecode(JNIEnv* env, jclass, jlong h
         if (ex.extract("out0", out) != 0) return nullptr;
     }
     const jsize n = static_cast<jsize>(static_cast<size_t>(out.w) * out.h * out.c);  // one channel: contiguous
+    if (n != ns) return nullptr;
     jfloatArray result = env->NewFloatArray(n);
     env->SetFloatArrayRegion(result, 0, n, static_cast<const float*>(out.data));
     return result;

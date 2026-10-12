@@ -18,6 +18,7 @@ import struct
 import wave
 
 import numpy as np
+from model_format import read_geometry
 
 FRAMES, CONTEXT = 200, 16  # the app's decoder pieces (Rvc.DEC_FRAMES, DEC_CONTEXT)
 PITCHES = (0.0, 6.0, 12.0)
@@ -91,9 +92,9 @@ def coarse(f0):
     return np.clip(np.round(mel), 1, 255).astype(np.int64)
 
 
-def nsf_source(f0, rng, upp=480, sine_amp=0.1, noise_std=0.003):
+def nsf_source(f0, rng, upp=480, sine_amp=0.1, noise_std=0.003, sample_rate=48000):
     f = np.repeat(np.asarray(f0, dtype=np.float64), upp)
-    phase = np.cumsum(f / 48000) % 1.0
+    phase = np.cumsum(f / sample_rate) % 1.0
     voiced = f > 0
     noise_amp = np.where(voiced, noise_std, sine_amp / 3)
     out = sine_amp * np.sin(2 * np.pi * phase) * voiced + noise_amp * rng.standard_normal(len(f))
@@ -112,8 +113,10 @@ def audio_files(paths):
 
 
 def calibration_pieces(enc_path, common, files, per_file=24, seconds=20):
-    """Decoder inputs (z [1, 192, 200], excitation [1, 96000, 1]) from the recordings, as the app makes them."""
+    """Native-rate decoder inputs from the recordings, as the app makes them."""
     import onnxruntime as ort
+    spec = read_geometry(Path(enc_path).parent)
+    hop = spec["hop_length"]
     load = lambda p: ort.InferenceSession(str(p), providers=["CPUExecutionProvider"])
     hubert, rmvpe, enc = load(Path(common) / "hubert.onnx"), load(Path(common) / "rmvpe.onnx"), load(enc_path)
     rng = np.random.default_rng(0)
@@ -137,16 +140,16 @@ def calibration_pieces(enc_path, common, files, per_file=24, seconds=20):
             feats = np.pad(feats, ((0, 0), (0, n - feats.shape[1]), (0, 0)), mode="edge").astype(np.float32)
             f0 = decode_f0(rmvpe.run(None, {"audio": x16[None]})[0][0])[:n]
             f0 = fill_short_gaps(np.pad(f0, (0, n - len(f0))))
-            hop = FRAMES - 2 * CONTEXT
-            starts = list(range(0, n - FRAMES, hop))
+            stride = FRAMES - 2 * CONTEXT
+            starts = list(range(0, n - FRAMES, stride))
             starts = starts[:: max(1, len(starts) // per_file)]
             for j, pitch in enumerate(PITCHES):
                 shifted = f0 * 2 ** (pitch / 12)
                 noise = rng.standard_normal((1, 192, n)).astype(np.float32)
                 z = enc.run(None, {"phone": feats, "pitch": coarse(shifted)[None], "noise": noise})[0]
-                sine = nsf_source(shifted, rng)
+                sine = nsf_source(shifted, rng, upp=hop, sample_rate=spec["sample_rate"])
                 for s in starts[j::len(PITCHES)]:  # each piece once, at one of the shifts
-                    pieces.append((z[:, :, s:s + FRAMES].copy(), sine[:, s * 480:(s + FRAMES) * 480].copy()))
+                    pieces.append((z[:, :, s:s + FRAMES].copy(), sine[:, s * hop:(s + FRAMES) * hop].copy()))
                     got += 1
         print(f"  {path.name}: {got} pieces", flush=True)
     return pieces
