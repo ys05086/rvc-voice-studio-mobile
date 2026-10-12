@@ -10,11 +10,24 @@ Voice Studio 폰 앱(Android, iPhone)은 RVC 목소리 모델을 ONNX 파일로 
 `rvc2phone_gui.bat`을 두 번 누르세요 (목소리 모델 `.pth`를 이 파일 위에 끌어다 놓으면 그 모델이 담긴 채로 열려요).
 처음 한 번은 필요한 패키지를 설치하느라 몇 분 걸려요 (약 1 GB).
 
-1. **목소리 모델**: "추가"로 `.pth`를 고르세요 (여러 개 가능). 고른 모델이 되는 모델인지(v2 · 48 kHz · 음높이) 바로 보여 줘요. 앱에서 쓸 이름도 여기서 바꿔요.
-2. **보정 녹음**: 내 목소리 WAV가 든 폴더 (기본 `calib`). 개수와 길이가 보여요. Android NPU 정수 디코더에 쓰여요.
-3. **옵션**: NPU 정수 디코더, GPU 디코더, 공통 모델(처음 한 번). 출력 폴더.
-4. **변환하기**: 단계가 위에 표시돼요.
-5. **폰으로 보내기 (Android)**: USB 디버깅으로 꽂거나 "무선 연결…"로 페어링·연결한 뒤 "골라 둔 목소리 보내기". 앱 폴더에 바로 넣고, 앱이 열리면서 알아서 제자리로 옮겨요 (불러오기 필요 없음). 이미 있는 목소리면 그 목소리의 설정(음높이 등)은 그대로 둬요. adb는 Android SDK의 platform-tools에서 찾아요 (없으면 이 폴더 안 `platform-tools`에 adb.exe를 두세요).
+상단에서 한국어 / English를 전환할 수 있어요.
+
+1. **모델 선택**: 여러 `.pth`의 v2 · 48 kHz · f0 지원 여부를 검사하고 이름을 정해요.
+2. **옵션 확인**: 일반 Android(CPU + GPU), Snapdragon(NPU 포함), CPU만 중 선택해요. 연결된 폰으로 추천받고 보정 WAV와 출력 폴더를 확인해요. 공통 모델은 완성된 파일이 있으면 재사용해요.
+3. **변환**: 단계와 경과 시간, 기록을 확인해요. 취소하거나 실패한 작업만 재시도할 수 있어요. 새 출력과 ZIP 검증이 끝나야 기존 결과를 교체해요.
+4. **폰으로 보내기**: USB / 무선 디버깅으로 연결하고 보낼 완성본을 직접 골라요. 이전 변환 결과도 불러올 수 있어요. 폰의 기존 목소리 설정은 유지하며 전송 후 앱을 다시 열어요.
+
+자세한 순서와 문제 해결은 [한국어 사용법](USAGE.ko.md) / [English walkthrough](USAGE.md)를 참고하세요.
+
+<details>
+<summary>컨버터 화면 보기 · 예시 모델과 경로 사용</summary>
+
+<a href="../docs/screenshots/converter-models-ko.jpg"><img src="../docs/screenshots/converter-models-ko.jpg" width="300" alt="모델 지원 여부와 이름을 확인하는 한글 화면"></a>
+<a href="../docs/screenshots/converter-send-ko.jpg"><img src="../docs/screenshots/converter-send-ko.jpg" width="300" alt="완성본을 직접 고르는 한글 전송 화면"></a>
+
+한글·영어의 4단계 전체 캡처는 위 단계별 사용법에 있습니다. 개인 모델·설정·기기 식별자는 포함하지 않았습니다.
+
+</details>
 
 iPhone은 출력 폴더를 파일 앱으로 옮겨서 불러오세요 (아래).
 
@@ -42,9 +55,9 @@ Android 폰의 NPU(스냅드래곤)는 16비트 소수 계산이 거칠어서 �
 
 - `calib` 폴더(이 파일 옆)에 **WAV** 녹음을 넣으세요. 몇 분이면 충분해요. 평소 말소리에 큰 소리·작은 소리·웃음·숨소리가 섞여 있으면 더 좋아요. 목소리 모델을 쓸 사람(보통 나)의 녹음이 제일 좋아요.
 - 다른 폴더를 쓰려면 `rvc2phone.bat 목소리.pth --calib D:\녹음폴더`.
-- 녹음이 없으면 이 파일만 건너뛰어요. 나중에 녹음을 넣고 다시 변환하면 돼요.
+- GUI의 NPU 옵션은 사용 가능한 WAV를 요구해요. 명령줄은 녹음이 없으면 이 파일만 건너뛰어요.
 - 보정에는 공통 모델(HuBERT, RMVPE)이 필요해서, `out/common`에 없으면 먼저 만들어요.
-- 변환 중 임시 파일(수 GB까지)은 `out/tmp`에 써요. C 드라이브가 가득 차도 괜찮아요.
+- 임시 파일은 출력 위치에 만들어요. GUI는 `out/.jobs`, 명령줄은 `out/tmp`를 사용하므로 해당 드라이브에 수 GB의 여유 공간을 두세요.
 
 ## 되는 모델
 
@@ -99,3 +112,19 @@ python -m venv .venv
 - `rvc/`: [RVC-Project](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI)의 모델 코드 일부 (MIT, `rvc/LICENSE`).
 - `--common`은 원본 가중치를 내려받아서 변환해요 (SHA-256 확인): ContentVec ([lengyue233/content-vec-best](https://huggingface.co/lengyue233/content-vec-best), MIT), RMVPE ([lj1995/VoiceConversionWebUI](https://huggingface.co/lj1995/VoiceConversionWebUI), MIT).
 - 목소리 모델은 들어 있지 않아요. 쓸 권리가 있는 모델과 목소리만 쓰세요.
+
+## 사용성 변경과 확인 범위
+
+| 이전의 불편 | 현재 동작 |
+| --- | --- |
+| 모델·옵션·전송이 한 화면에 모임 | 4단계 탭으로 분리, 한국어·영어 전환과 옵션 기억 |
+| 실패 후 어떤 모델을 다시 돌릴지 불분명 | 성공한 모델은 유지하고 실패·취소한 작업만 현재 옵션으로 재시도 |
+| 중단된 변환이 완성본과 섞일 수 있음 | 별도 작업 폴더에서 생성하고 필수 파일·ZIP 검증 후 교체 |
+| 보낼 모델과 완성 여부가 불분명 | 출력 폴더의 완성본만 표시하고 보낼 결과를 직접 선택 |
+| 폰 연결 문제가 원인 없이 보임 | ADB 없음·승인 필요·오프라인 안내, 무선 페어링과 연결 분리 |
+
+검증: Windows에서 한글·영어 화면과 17개 자동 테스트(실제 하위 프로세스 취소, 실패 복구, 전송 보호, GUI 재시도·언어 전환)를 확인했습니다. 실제 RVC v2 48 kHz f0 모델로 CPU용 ONNX 내보내기, 원본과의 수치 비교, ZIP 검증도 통과했습니다. 이 변경에서 GPU/NPU 전체 내보내기나 실제 폰 재전송은 다시 검증하지 않았습니다. 전송 오류 처리는 모의 ADB로 검사했습니다.
+
+32/40 kHz 지원 확대, 전체 남은 시간 추정, 취소 지점부터 이어서 변환은 아직 지원하지 않습니다. 작은 창에서는 탭 내부를 스크롤해야 합니다.
+
+개발 검사: `python -m unittest discover -s converter -p "test_*.py"` (저장소 루트). ML 패키지 없이 실행하며 GUI 검사는 Windows에서 실행합니다.

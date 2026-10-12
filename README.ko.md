@@ -148,7 +148,7 @@ PC GPU(CUDA)의 16비트 소수는 47~60 dB를 유지해요. 그래서 NPU의 16
 
 1. Releases의 APK를 설치해요 (또는 아래처럼 직접 빌드).
 2. 공통 모델(HuBERT, RMVPE, NPU용 HuBERT, 약 1.1 GB)을 받아요: 앱의 설정에서 **받기**. 받기가 안 되면 변환 도구의 `--common`으로 만들어서 옮겨요.
-3. 목소리 모델을 PC에서 [`converter/`](converter/README.md)로 바꿔요: `rvc2phone_gui.bat`을 열고 RVC v2 48 kHz `.pth`를 추가, NPU 디코더용으로 내 녹음(WAV) 몇 분을 `converter/calib`에 넣고 **변환하기**. USB나 무선 디버깅이 켜져 있으면 **폰으로 보내기**로 앱에 바로 들어가요. 아니면 출력 폴더나 zip을 앱 설정에서 불러와요.
+3. [화면과 함께 보는 컨버터 사용법](converter/USAGE.ko.md)을 따라 `rvc2phone_gui.bat`을 열고 RVC v2 48 kHz `.pth`를 추가해요. NPU 디코더가 필요하면 **옵션 확인 → Snapdragon · CPU + GPU + NPU**를 고르고 보정 WAV 몇 분을 준비하세요. **변환 시작** 후 **폰으로 보내기**에서 완성본을 직접 골라 USB·무선으로 보내요. 디버깅 없이 쓴다면 결과 폴더나 ZIP을 앱에서 불러오세요.
 
 목소리 모델은 들어 있지 않고, 앱이 따로 내려받지도 않아요. 쓸 권리가 있는 모델과 목소리만 쓰세요.
 

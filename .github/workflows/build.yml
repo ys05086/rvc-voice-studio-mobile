@@ -10,6 +10,17 @@ on:
   workflow_dispatch:
 
 jobs:
+  converter:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Check converter workflow and GUI
+        working-directory: converter
+        run: python -m unittest -v test_workflow test_gui
   android:
     runs-on: ubuntu-latest
     timeout-minutes: 30

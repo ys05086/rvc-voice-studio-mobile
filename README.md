@@ -146,7 +146,7 @@ Realtime, one step per block (a step must finish within its block):
 
 1. Install the APK from the Releases page (or build it, see below).
 2. Get the shared models (HuBERT, RMVPE and HuBERT for the NPU, about 1.1 GB): tap **받기** (download) in the app's settings. If the download does not work, build them with the converter (`--common`) and copy them over.
-3. Convert your voice model on a PC with [converter walkthrough](converter/USAGE.md): open `rvc2phone_gui.bat`, add an RVC v2 48 kHz `.pth`, put a few minutes of your own recordings (WAV) in `converter/calib` for the NPU decoder, and press **변환하기** (convert). With USB or wireless debugging on, **폰으로 보내기** (send to phone) puts the voice straight into the app; otherwise import the output folder or zip in the app's settings.
+3. Follow the [illustrated converter walkthrough](converter/USAGE.md): open `rvc2phone_gui.bat`, choose English or Korean, and add an RVC v2 48 kHz `.pth`. For the NPU decoder, select **Snapdragon · CPU + GPU + NPU** under **Prepare** and choose a few minutes of calibration WAVs. Click **Start conversion**, then select completed results under **Send to phone** for USB/wireless transfer. Without debugging, import the output folder or ZIP in the app.
 
 Voice models are not included and are never downloaded by the app. Use only models and voices you have the right to use.
 

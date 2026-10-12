@@ -1,514 +1,1279 @@
-"""rvc2phone with a window: RVC voice models (.pth) -> the phone app's files, and straight onto an Android phone.
+"""Four-step, bilingual model preparation and Android transfer UI."""
 
-  rvc2phone_gui.bat [VOICE.pth ...]      (or drag .pth files onto it)
-
-Converting runs rvc2phone.py once per voice (same options as the command line) and shows its stages. 폰으로 보내기
-copies the converted files into the app's folder over USB or wireless debugging (adb); the app moves them into place
-by itself the next time it opens, so nothing has to be imported by hand. iPhone: copy the output folder with the
-Files app as before.
-"""
+import json
+import locale
 import os
 from pathlib import Path
 import queue
 import re
-import subprocess
 import sys
 import threading
 import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-import wave
+import workflow as work
 
 HERE = Path(__file__).resolve().parent
-PY = Path(sys.executable).with_name("python.exe") if sys.executable.endswith("pythonw.exe") else Path(sys.executable)
-PACKAGE = "com.voicestudio.phone"
-REMOTE = f"/sdcard/Android/data/{PACKAGE}/files"
-NO_WINDOW = 0x08000000 if os.name == "nt" else 0  # no console window flashing for each adb / python call
-
-# the app's palette (android/app/src/main/res/values/colors.xml)
-BG, PANEL, LINE, TEXT, MUTED = "#F7F4FA", "#FFFEFD", "#E9E3F0", "#3F3A4A", "#857B94"
-ACCENT, STRONG, LAVENDER, GREEN, REC = "#9E83BC", "#7C62A0", "#EAE3F5", "#5F9F82", "#D0607A"
-
-STAGES = [  # (marker in rvc2phone's output, what the window says)
-    (".enc:", "ONNX로 내보내는 중"),
-    ("dec_a + dec_b", "Android GPU 디코더 만드는 중"),
-    ("wrote ", "GPU 디코더 완료"),
-    ("calibrating on", "NPU 디코더 보정 중 (녹음을 모델에 통과시켜요)"),
-    ("calibrated on", "NPU 디코더 완료"),
-    ("voice:", "완료"),
+PY = (
+    Path(sys.executable).with_name("python.exe")
+    if sys.executable.endswith("pythonw.exe")
+    else Path(sys.executable)
+)
+BG, PANEL, LINE, INK, MUTED = "#F7F4FA", "#FFFEFD", "#E9E3F0", "#3F3A4A", "#857B94"
+ACCENT, STRONG, LAVENDER = "#9E83BC", "#7C62A0", "#EAE3F5"
+PREFS = (
+    Path(os.environ.get("LOCALAPPDATA", Path.home()))
+    / "VoiceStudioConverter/preferences.json"
+)
+PROFILES = [
+    ("일반 Android · CPU + GPU", "General Android · CPU + GPU"),
+    ("Snapdragon · CPU + GPU + NPU", "Snapdragon · CPU + GPU + NPU"),
+    ("CPU만", "CPU only"),
 ]
-
-
-def adb_path():
-    for candidate in (Path(os.environ.get("LOCALAPPDATA", "")) / "Android/Sdk/platform-tools/adb.exe",
-                      HERE / "platform-tools/adb.exe"):
-        if candidate.is_file():
-            return str(candidate)
-    from shutil import which
-    return which("adb")
-
-
-def adb(*args, timeout=600):
-    exe = adb_path()
-    if not exe:
-        raise RuntimeError("adb가 없어요")
-    r = subprocess.run([exe, *map(str, args)], capture_output=True, text=True, encoding="utf-8", errors="replace",
-                       timeout=timeout, creationflags=NO_WINDOW)
-    return r.returncode, (r.stdout + r.stderr).strip()
-
-
-def recordings(folder):
-    """(WAV files, seconds) in a calibration folder."""
-    files, seconds = 0, 0.0
-    for f in Path(folder).glob("*.wav") if Path(folder).is_dir() else []:
-        try:
-            with wave.open(str(f)) as w:
-                seconds += w.getnframes() / w.getframerate()
-            files += 1
-        except (wave.Error, EOFError):
-            pass
-    return files, seconds
+STATES = {
+    "checking": ("검사 중", "Checking"),
+    "ready": ("지원됨", "Supported"),
+    "unsupported": ("지원하지 않는 형식", "Unsupported"),
+    "done": ("완료", "Done"),
+    "failed": ("실패 · 재시도 가능", "Failed · retry available"),
+    "cancelled": ("취소됨", "Cancelled"),
+}
+STAGES = {
+    "hubert": ("HuBERT 다운로드·내보내기", "Downloading/exporting HuBERT"),
+    "rmvpe": ("RMVPE 다운로드·내보내기", "Downloading/exporting RMVPE"),
+    "hubert_npu": ("NPU용 HuBERT 준비", "Preparing NPU HuBERT"),
+    "onnx": ("ONNX 내보내기·검증", "Exporting/verifying ONNX"),
+    "gpu": ("GPU 디코더 생성", "Building GPU decoder"),
+    "npu": ("NPU 디코더 보정", "Calibrating NPU decoder"),
+    "archive": ("ZIP 생성·검증", "Creating/verifying ZIP"),
+}
+ERRORS = {
+    "bad_name": (
+        "이름에는 문자·숫자·밑줄·하이픈을 사용하세요. 예약된 이름은 쓸 수 없어요.",
+        "Use letters, numbers, underscores or hyphens. Reserved names cannot be used.",
+    ),
+    "duplicate_name": (
+        "모델마다 서로 다른 이름을 지정하세요.",
+        "Give each model a different name.",
+    ),
+    "checkpoint": (
+        "학습 중간 저장본 대신 추론용 weights의 .pth를 선택하세요.",
+        "Choose an inference weights .pth, not a training checkpoint.",
+    ),
+    "adb_missing": (
+        "Android SDK Platform Tools를 설치하거나 converter/platform-tools에 넣으세요.",
+        "Install Android SDK Platform Tools or place it in converter/platform-tools.",
+    ),
+    "adb_failed": (
+        "기기 연결과 폰의 디버깅 승인을 확인하세요.",
+        "Check the device connection and debugging authorization.",
+    ),
+    "app_missing": (
+        "폰에 Voice Studio를 설치하고 한 번 열어 주세요.",
+        "Install Voice Studio on the phone and open it once.",
+    ),
+    "incomplete": (
+        "완성되지 않은 출력입니다. 다시 변환해 주세요.",
+        "Output is incomplete. Convert it again.",
+    ),
+    "export_failed": (
+        "변환 실패. 기록을 확인한 뒤 재시도하세요.",
+        "Conversion failed. Check the log, then retry.",
+    ),
+    "common_required": (
+        "공통 모델을 먼저 준비해 주세요.",
+        "Prepare shared models first.",
+    ),
+    "output_link": (
+        "출력 경로는 심볼릭 링크가 아닌 일반 폴더를 사용하세요.",
+        "Use a regular output folder, not a symbolic link.",
+    ),
+    "recover_output": (
+        "기존 결과를 복구하지 못했어요. 표시된 작업 폴더를 보존하고 확인하세요.",
+        "Previous results could not be restored. Preserve and check the displayed work folder.",
+    ),
+    "no_device": ("연결된 폰을 선택하세요.", "Select a connected phone."),
+    "unauthorized": (
+        "폰에서 이 PC의 디버깅을 허용하세요.",
+        "Authorize this PC on the phone.",
+    ),
+    "offline": (
+        "폰이 오프라인입니다. 다시 연결하세요.",
+        "Phone is offline. Reconnect it.",
+    ),
+}
 
 
 class App(tk.Tk):
-    def __init__(self, voices):
+    def __init__(self, voices=(), *, discover=True, preferences=PREFS):
         super().__init__()
-        self.title("rvc2phone · 목소리 모델을 폰 앱용으로")
+        self.preferences = Path(preferences)
+        try:
+            saved = json.loads(self.preferences.read_text(encoding="utf-8"))
+            if not isinstance(saved, dict):
+                saved = {}
+        except (OSError, ValueError):
+            saved = {}
+        default = (
+            "ko" if (locale.getlocale()[0] or "").lower().startswith("ko") else "en"
+        )
+        self.language = saved.get("language", default)
+        if self.language not in ("ko", "en"):
+            self.language = default
+        self.events, self.voices, self.results, self.found_devices = (
+            queue.Queue(),
+            [],
+            [],
+            [],
+        )
+        self.failed, self.log_lines = set(), []
+        self.running, self.runner, self.started = None, None, None
+        self.close_pending = self._renaming = self.device_busy = False
+        self.inspections = self.calib_generation = 0
+        self.out = tk.StringVar(value=saved.get("out", str(HERE / "out")))
+        self.calib = tk.StringVar(value=saved.get("calib", str(HERE / "calib")))
+        self.profile = tk.IntVar(
+            value=saved.get("profile", 0) if saved.get("profile", 0) in (0, 1, 2) else 0
+        )
+        self.common, self.send_common, self.name = (
+            tk.BooleanVar(value=True),
+            tk.BooleanVar(value=False),
+            tk.StringVar(),
+        )
+        self.name.trace_add("write", self.rename_selected)
         self.configure(bg=BG)
-        self.geometry("800x960")
-        self.minsize(720, 760)
-        self.events = queue.Queue()
-        self.voices = []          # [{"path", "name", "info", "done"}]
-        self.running = False
+        self.geometry("960x850")
+        self.minsize(800, 660)
+        self.protocol("WM_DELETE_WINDOW", self.close)
         self.style()
         self.build()
-        for v in voices:
-            self.add_voice(Path(v))
+        self.bind("<MouseWheel>", self.wheel)
+        self.after(75, self.pump)
+        self.out.trace_add(
+            "write", lambda *_: self.debounce("out", self.refresh_results)
+        )
+        self.calib.trace_add(
+            "write", lambda *_: self.debounce("calib", self.refresh_calib)
+        )
+        for path in voices:
+            self.add_voice(Path(path))
         self.refresh_calib()
-        self.refresh_devices()
-        self.after(100, self.pump)
+        self.refresh_results()
+        if discover:
+            self.refresh_devices()
 
-    # ------------------------------------------------------------------ look
+    def t(self, ko, en):
+        return en if self.language == "en" else ko
+
     def style(self):
         s = ttk.Style(self)
         s.theme_use("clam")
-        font = ("Malgun Gothic", 10)
-        s.configure(".", background=BG, foreground=TEXT, font=font)
-        s.configure("Card.TFrame", background=PANEL, relief="solid", borderwidth=1, bordercolor=LINE)
-        s.configure("Card.TLabel", background=PANEL, foreground=TEXT)
-        s.configure("Title.TLabel", background=PANEL, foreground=TEXT, font=("Malgun Gothic", 11, "bold"))
-        s.configure("Hint.TLabel", background=PANEL, foreground=MUTED, font=("Malgun Gothic", 9))
-        s.configure("Ok.TLabel", background=PANEL, foreground=GREEN, font=("Malgun Gothic", 9, "bold"))
-        s.configure("Bad.TLabel", background=PANEL, foreground=REC, font=("Malgun Gothic", 9, "bold"))
-        s.configure("Card.TCheckbutton", background=PANEL, foreground=TEXT)
-        s.map("Card.TCheckbutton", background=[("active", PANEL)])
-        s.configure("TButton", background=LAVENDER, foreground=TEXT, bordercolor=LINE, padding=(12, 5))
+        s.configure(".", background=BG, foreground=INK, font=("Segoe UI", 10))
+        s.configure("TNotebook", borderwidth=0)
+        s.configure("TNotebook.Tab", padding=(15, 10), background=LAVENDER)
+        s.map(
+            "TNotebook.Tab",
+            background=[("selected", PANEL)],
+            foreground=[("selected", STRONG)],
+        )
+        s.configure(
+            "TButton",
+            background=LAVENDER,
+            foreground=INK,
+            bordercolor=LINE,
+            padding=(12, 7),
+        )
         s.map("TButton", background=[("active", "#DED3EF"), ("disabled", "#F0ECF5")])
-        s.configure("Primary.TButton", background=ACCENT, foreground="white", font=("Malgun Gothic", 11, "bold"), padding=(16, 8))
-        s.map("Primary.TButton", background=[("active", STRONG), ("disabled", "#CFC3DE")])
-        s.configure("TEntry", fieldbackground="white", bordercolor=LINE)
-        s.configure("Horizontal.TProgressbar", background=ACCENT, troughcolor=LAVENDER, bordercolor=LINE)
+        s.configure(
+            "Primary.TButton", background=ACCENT, foreground="white", padding=(18, 10)
+        )
+        s.map(
+            "Primary.TButton", background=[("active", STRONG), ("disabled", "#CFC3DE")]
+        )
+        s.configure("TProgressbar", background=ACCENT, troughcolor=LAVENDER)
+        s.configure("TEntry", fieldbackground="white")
 
-    def card(self, parent, title, hint=None):
-        frame = ttk.Frame(parent, style="Card.TFrame", padding=12)
-        frame.pack(fill="x", pady=(10, 0))
-        head = ttk.Frame(frame, style="Card.TFrame", padding=0, borderwidth=0)
-        head.pack(fill="x")
-        ttk.Label(head, text=title, style="Title.TLabel").pack(side="left")
-        if hint:
-            ttk.Label(head, text=hint, style="Hint.TLabel").pack(side="left", padx=(10, 0))
-        return frame
+    def label(self, parent, ko="", en="", *, big=False, muted=False):
+        w = tk.Label(
+            parent,
+            text=self.t(ko, en),
+            bg=parent.cget("bg"),
+            fg=MUTED if muted else INK,
+            anchor="w",
+            justify="left",
+            font=("Segoe UI", 11 if big else 10, "bold" if big else "normal"),
+            wraplength=730,
+        )
+        w.pack(fill="x", pady=(0, 8))
+        return w
 
-    # ------------------------------------------------------------------ layout
-    def build(self):
-        top = tk.Frame(self, bg=BG)
-        top.pack(fill="x", padx=18, pady=(14, 0))
-        brand = tk.Frame(top, bg=BG)
-        brand.pack(side="left")
-        tk.Label(brand, text="voice ", bg=BG, fg=TEXT, font=("Malgun Gothic", 18, "bold")).pack(side="left")
-        tk.Label(brand, text="/", bg=BG, fg=ACCENT, font=("Malgun Gothic", 18, "bold")).pack(side="left")
-        tk.Label(brand, text=" studio · 변환 도구", bg=BG, fg=TEXT, font=("Malgun Gothic", 18, "bold")).pack(side="left")
-        body = tk.Frame(self, bg=BG)
-        body.pack(fill="both", expand=True, padx=18, pady=(0, 14))
+    def button(self, parent, ko, en, action, *, primary=False, lock=True, side="left"):
+        w = ttk.Button(
+            parent,
+            text=self.t(ko, en),
+            command=action,
+            style="Primary.TButton" if primary else "TButton",
+        )
+        w.pack(side=side, padx=(0, 8))
+        if lock:
+            self.inputs.append((w, "normal"))
+        return w
 
-        # voices
-        c = self.card(body, "목소리 모델 (.pth)", "RVC v2 · 48 kHz · 음높이 있는 모델")
-        row = ttk.Frame(c, style="Card.TFrame", borderwidth=0)
-        row.pack(fill="x", pady=(8, 0))
-        self.list = tk.Listbox(row, height=4, bg="white", fg=TEXT, selectbackground=LAVENDER, selectforeground=TEXT,
-                               highlightthickness=1, highlightbackground=LINE, relief="flat", font=("Malgun Gothic", 10))
-        self.list.pack(side="left", fill="x", expand=True)
-        self.list.bind("<<ListboxSelect>>", lambda e: self.show_selected())
-        buttons = ttk.Frame(row, style="Card.TFrame", borderwidth=0)
-        buttons.pack(side="left", padx=(10, 0))
-        ttk.Button(buttons, text="추가", command=self.pick_voices).pack(fill="x")
-        ttk.Button(buttons, text="빼기", command=self.remove_voice).pack(fill="x", pady=(6, 0))
-        name_row = ttk.Frame(c, style="Card.TFrame", borderwidth=0)
-        name_row.pack(fill="x", pady=(8, 0))
-        ttk.Label(name_row, text="앱에서 쓸 이름", style="Card.TLabel").pack(side="left")
-        self.name = tk.StringVar()
-        entry = ttk.Entry(name_row, textvariable=self.name, width=24)
-        entry.pack(side="left", padx=(10, 0))
-        self.name.trace_add("write", lambda *_: self.rename_selected())
-        self.info = ttk.Label(name_row, text="", style="Hint.TLabel")
-        self.info.pack(side="left", padx=(12, 0))
+    def row(self, parent):
+        w = tk.Frame(parent, bg=parent.cget("bg"))
+        w.pack(fill="x", pady=(3, 7))
+        return w
 
-        # calibration
-        c = self.card(body, "보정 녹음 (Android NPU용)", "내 목소리 WAV 몇 분")
-        row = ttk.Frame(c, style="Card.TFrame", borderwidth=0)
-        row.pack(fill="x", pady=(8, 0))
-        self.calib = tk.StringVar(value=str(HERE / "calib"))
-        ttk.Entry(row, textvariable=self.calib).pack(side="left", fill="x", expand=True)
-        ttk.Button(row, text="바꾸기", command=self.pick_calib).pack(side="left", padx=(8, 0))
-        ttk.Button(row, text="열기", command=lambda: self.open_folder(self.calib.get())).pack(side="left", padx=(6, 0))
-        self.calib_info = ttk.Label(c, text="", style="Hint.TLabel")
-        self.calib_info.pack(anchor="w", pady=(6, 0))
-        ttk.Label(c, style="Hint.TLabel", wraplength=700, justify="left",
-                  text="Android 폰의 NPU는 이 녹음으로 맞춘 '정수 디코더'를 쓰면 32비트와 같은 소리로 2배 빨라져요. "
-                       "평소 말소리에 큰 소리·작은 소리·웃음·숨소리가 섞이면 더 좋아요. 없으면 그 파일만 건너뛰어요.").pack(anchor="w", pady=(4, 0))
+    def card(self, parent, ko, en):
+        w = tk.Frame(
+            parent,
+            bg=PANEL,
+            highlightbackground=LINE,
+            highlightthickness=1,
+            padx=18,
+            pady=14,
+        )
+        w.pack(fill="x", pady=(0, 12))
+        self.label(w, ko, en, big=True)
+        return w
 
-        # options and output
-        c = self.card(body, "옵션")
-        self.npu = tk.BooleanVar(value=True)
-        self.ncnn = tk.BooleanVar(value=True)
-        self.common = tk.BooleanVar(value=not (HERE / "out/common/hubert.onnx").is_file())
-        ttk.Checkbutton(c, text="Android NPU 정수 디코더 (권장, 보정 녹음 필요)", variable=self.npu, style="Card.TCheckbutton").pack(anchor="w", pady=(8, 0))
-        ttk.Checkbutton(c, text="Android GPU 디코더 (ncnn, 32비트)", variable=self.ncnn, style="Card.TCheckbutton").pack(anchor="w", pady=(2, 0))
-        ttk.Checkbutton(c, text="공통 모델도 만들기 (hubert · rmvpe · NPU용 hubert, 처음 한 번 · 1 GB 받기)", variable=self.common,
-                        style="Card.TCheckbutton").pack(anchor="w", pady=(2, 0))
-        row = ttk.Frame(c, style="Card.TFrame", borderwidth=0)
-        row.pack(fill="x", pady=(8, 0))
-        ttk.Label(row, text="출력 폴더", style="Card.TLabel").pack(side="left")
-        self.out = tk.StringVar(value=str(HERE / "out"))
-        ttk.Entry(row, textvariable=self.out).pack(side="left", fill="x", expand=True, padx=(10, 0))
-        ttk.Button(row, text="열기", command=lambda: self.open_folder(self.out.get())).pack(side="left", padx=(8, 0))
+    def entry(self, parent, variable):
+        w = ttk.Entry(parent, textvariable=variable)
+        w.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self.inputs.append((w, "normal"))
+        return w
 
-        # convert
-        row = tk.Frame(body, bg=BG)
-        row.pack(fill="x", pady=(12, 0))
-        self.convert_button = ttk.Button(row, text="변환하기", style="Primary.TButton", command=self.convert)
-        self.convert_button.pack(side="left")
-        self.status = tk.Label(row, text="", bg=BG, fg=STRONG, font=("Malgun Gothic", 10, "bold"), anchor="w")
-        self.status.pack(side="left", padx=(12, 0), fill="x", expand=True)
-        self.progress = ttk.Progressbar(body, mode="determinate", value=0)
-        self.progress.pack(fill="x", pady=(8, 0))
+    def build(self, tab=0):
+        self.inputs = []
+        self.title(
+            self.t("Voice Studio · 모델 변환 도구", "Voice Studio · Model converter")
+        )
+        top = tk.Frame(self, bg=BG, padx=22, pady=16)
+        top.pack(fill="x")
+        tk.Label(
+            top, text="voice / studio", bg=BG, fg=STRONG, font=("Segoe UI", 22, "bold")
+        ).pack(side="left")
+        self.language_box = ttk.Combobox(
+            top, state="readonly", values=["한국어", "English"], width=11
+        )
+        self.language_box.current(self.language == "en")
+        self.language_box.pack(side="right")
+        self.language_box.bind("<<ComboboxSelected>>", self.change_language)
+        self.inputs.append((self.language_box, "readonly"))
+        self.button(top, "사용법", "Guide", self.help, lock=False, side="right")
+        self.label(
+            self,
+            "    목소리 모델을 준비하고, 폰으로 보내세요.",
+            "    Prepare a voice model. Take it to your phone.",
+            muted=True,
+        )
+        self.tabs = ttk.Notebook(self)
+        self.tabs.pack(fill="both", expand=True, padx=20)
+        self.pages, self.canvases = [], []
+        for ko, en in [
+            ("1  모델 선택", "1  Choose models"),
+            ("2  옵션 확인", "2  Prepare"),
+            ("3  변환", "3  Convert"),
+            ("4  폰으로 보내기", "4  Send to phone"),
+        ]:
+            host = tk.Frame(self.tabs, bg=BG)
+            self.tabs.add(host, text=self.t(ko, en))
+            canvas = tk.Canvas(host, bg=BG, highlightthickness=0)
+            scroll = ttk.Scrollbar(host, orient="vertical", command=canvas.yview)
+            scroll.pack(side="right", fill="y")
+            canvas.pack(side="left", fill="both", expand=True)
+            canvas.configure(yscrollcommand=scroll.set)
+            body = tk.Frame(canvas, bg=BG, padx=2, pady=14)
+            window = canvas.create_window((0, 0), window=body, anchor="nw")
+            body.bind(
+                "<Configure>",
+                lambda e, c=canvas: c.configure(scrollregion=c.bbox("all")),
+            )
+            canvas.bind(
+                "<Configure>",
+                lambda e, c=canvas, w=window: c.itemconfigure(w, width=e.width),
+            )
+            self.pages.append(body)
+            self.canvases.append(canvas)
+        self.build_models()
+        self.build_options()
+        self.build_convert()
+        self.build_phone()
+        footer = tk.Frame(self, bg=BG, padx=22, pady=12)
+        footer.pack(fill="x")
+        self.status = self.label(
+            footer,
+            "준비되면 변환을 시작하세요.",
+            "Start conversion when you are ready.",
+        )
+        row = self.row(footer)
+        self.stage_label = tk.Label(row, text="", bg=BG, fg=STRONG, anchor="w")
+        self.stage_label.pack(side="left", fill="x", expand=True)
+        self.elapsed = tk.Label(row, text="", bg=BG, fg=MUTED)
+        self.elapsed.pack(side="right")
+        self.cancel_button = self.button(
+            row, "변환 취소", "Cancel conversion", self.cancel, lock=False, side="right"
+        )
+        self.cancel_button.state(["disabled"])
+        self.progress = ttk.Progressbar(footer, mode="indeterminate")
+        self.progress.pack(fill="x", pady=(3, 7))
+        self.tabs.bind("<<NotebookTabChanged>>", lambda e: self.review())
+        self.tabs.select(tab)
+        self.redraw_list()
+        self.display_devices()
+        self.review()
 
-        # phone
-        c = self.card(body, "폰으로 보내기 (Android)", "USB 디버깅 또는 무선 디버깅")
-        row = ttk.Frame(c, style="Card.TFrame", borderwidth=0)
-        row.pack(fill="x", pady=(8, 0))
-        self.device = tk.StringVar()
-        self.devices = ttk.Combobox(row, textvariable=self.device, state="readonly", width=34)
-        self.devices.pack(side="left")
-        ttk.Button(row, text="새로고침", command=self.refresh_devices).pack(side="left", padx=(8, 0))
-        ttk.Button(row, text="무선 연결…", command=self.wireless).pack(side="left", padx=(6, 0))
-        self.send_common = tk.BooleanVar(value=False)
-        ttk.Checkbutton(c, text="공통 모델도 보내기 (폰에 없을 때만 · 약 1.1 GB)", variable=self.send_common,
-                        style="Card.TCheckbutton").pack(anchor="w", pady=(8, 0))
-        row = ttk.Frame(c, style="Card.TFrame", borderwidth=0)
-        row.pack(fill="x", pady=(8, 0))
-        self.send_button = ttk.Button(row, text="골라 둔 목소리 보내기", command=self.send)
-        self.send_button.pack(side="left")
-        self.phone_info = ttk.Label(row, text="", style="Hint.TLabel", wraplength=480, justify="left")
-        self.phone_info.pack(side="left", padx=(12, 0))
+    def build_models(self):
+        c = self.card(self.pages[0], "목소리 모델 (.pth)", "Voice models (.pth)")
+        self.label(
+            c,
+            "RVC v2 · 48 kHz · 음높이(f0) 있는 추론용 모델을 선택하세요. 32/40 kHz는 아직 지원하지 않습니다.",
+            "Choose RVC v2, 48 kHz inference models with pitch (f0). 32/40 kHz models are not supported yet.",
+            muted=True,
+        )
+        self.model_list = tk.Listbox(
+            c,
+            height=7,
+            bg="white",
+            fg=INK,
+            selectbackground=LAVENDER,
+            selectforeground=INK,
+            exportselection=False,
+            relief="flat",
+            font=("Segoe UI", 10),
+        )
+        self.model_list.pack(fill="x", pady=8)
+        self.model_list.bind("<<ListboxSelect>>", lambda e: self.show_selected())
+        self.inputs.append((self.model_list, "normal"))
+        row = self.row(c)
+        self.button(row, "모델 추가", "Add models", self.pick_voices)
+        self.button(row, "선택 모델 빼기", "Remove selected", self.remove_voice)
+        self.label(c, "앱에서 쓸 이름", "Name in the app")
+        self.entry(self.row(c), self.name)
+        self.label(
+            c,
+            "문자·숫자·밑줄·하이픈을 사용하고, 모델마다 다른 이름을 지정하세요.",
+            "Use letters, numbers, underscores or hyphens. Give each model a unique name.",
+            muted=True,
+        )
+        self.model_info = self.label(c, muted=True)
+        self.button(
+            self.row(self.pages[0]),
+            "다음 단계 →",
+            "Next step →",
+            lambda: self.tabs.select(1),
+            primary=True,
+        )
 
-        # log
-        self.log = tk.Text(body, height=5, bg=PANEL, fg=MUTED, relief="flat", highlightthickness=1,
-                           highlightbackground=LINE, font=("Consolas", 9), wrap="none")
-        self.log.pack(fill="both", expand=True, pady=(10, 0))
+    def build_options(self):
+        c = self.card(
+            self.pages[1], "어떤 폰에서 사용하나요?", "Which phone will you use?"
+        )
+        for index, names in enumerate(PROFILES):
+            w = tk.Radiobutton(
+                c,
+                text=self.t(*names),
+                variable=self.profile,
+                value=index,
+                bg=PANEL,
+                fg=INK,
+                activebackground=PANEL,
+                selectcolor=LAVENDER,
+                anchor="w",
+                command=self.review,
+            )
+            w.pack(fill="x", pady=2)
+            self.inputs.append((w, "normal"))
+        self.label(
+            c,
+            "일반 Android가 기본값입니다. NPU에는 보정 녹음이 필요해요. 실제 기기에서 성능과 호환성을 확인하세요.",
+            "General Android is the default. NPU needs calibration audio. Verify performance and compatibility on your phone.",
+            muted=True,
+        )
+        self.detect_button = self.button(
+            self.row(c),
+            "연결된 폰으로 옵션 추천",
+            "Recommend from connected phone",
+            self.detect,
+        )
+        self.recommendation = self.label(c, muted=True)
+        c = self.card(
+            self.pages[1],
+            "보정 녹음 · NPU 선택 시 필요",
+            "Calibration audio · Required for NPU",
+        )
+        self.label(
+            c,
+            "모델을 사용할 사람의 평소 말소리 WAV를 몇 분 준비하세요. 실제 마이크 입력을 보정합니다.",
+            "Use a few minutes of WAV recordings of the person using the model. These calibrate microphone input.",
+            muted=True,
+        )
+        row = self.row(c)
+        self.entry(row, self.calib)
+        self.button(
+            row, "찾아보기…", "Browse…", lambda: self.pick_directory(self.calib)
+        )
+        self.calib_info = self.label(c, muted=True)
+        c = self.card(self.pages[1], "결과를 저장할 폴더", "Output folder")
+        row = self.row(c)
+        self.entry(row, self.out)
+        self.button(row, "찾아보기…", "Browse…", lambda: self.pick_directory(self.out))
+        self.button(row, "열기", "Open", self.open_output)
+        w = tk.Checkbutton(
+            c,
+            text=self.t("없는 공통 모델도 준비하기", "Build missing shared models"),
+            variable=self.common,
+            bg=PANEL,
+            activebackground=PANEL,
+            command=self.review,
+        )
+        w.pack(anchor="w")
+        self.inputs.append((w, "normal"))
+        self.common_info = self.label(c, muted=True)
+        self.label(
+            c,
+            "공통 모델은 모든 목소리가 함께 씁니다. 처음에는 다운로드와 추가 시간이 필요해요. NPU 보정에 필요하면 자동 준비합니다.",
+            "All voices use shared models. First setup needs downloads and extra time. Missing models are prepared automatically for NPU calibration.",
+            muted=True,
+        )
+        self.button(
+            self.row(self.pages[1]),
+            "다음 단계 →",
+            "Next step →",
+            lambda: self.tabs.select(2),
+            primary=True,
+        )
 
-    def busy(self, on):
-        """The bar runs while something works and stays empty otherwise."""
-        if on:
-            self.progress.configure(mode="indeterminate")
-            self.progress.start(12)
-        else:
-            self.progress.stop()
-            self.progress.configure(mode="determinate", value=0)
+    def build_convert(self):
+        c = self.card(self.pages[2], "시작하기 전에", "Before you start")
+        self.review_label = self.label(c)
+        self.label(
+            c,
+            "완성된 출력만 결과 폴더에 반영합니다. 취소나 실패 시 기존 완성본을 유지해요.",
+            "Only completed output replaces the result. Cancellation or failure preserves existing completed models.",
+            muted=True,
+        )
+        row = self.row(c)
+        self.convert_button = self.button(
+            row, "변환 시작", "Start conversion", self.convert, primary=True
+        )
+        self.retry_button = self.button(
+            row,
+            "실패·취소한 작업 재시도",
+            "Retry failed / cancelled jobs",
+            lambda: self.convert(retry=True),
+        )
+        self.label(
+            c,
+            "재시도는 성공한 모델을 건너뛰고, 현재 옵션으로 실패·취소한 작업을 처음부터 다시 실행해요.",
+            "Retry skips successful models and restarts failed/cancelled jobs from the beginning using the current options.",
+            muted=True,
+        )
+        c = self.card(self.pages[2], "자세한 기록", "Details & log")
+        self.log = tk.Text(
+            c, height=8, bg=BG, fg=INK, relief="flat", wrap="word", font=("Consolas", 9)
+        )
+        self.log.pack(fill="x", pady=5)
+        self.log.insert(
+            "end", "\n".join(self.log_lines) + ("\n" if self.log_lines else "")
+        )
+        self.log.configure(state="disabled")
+        self.label(
+            c,
+            "기록에는 로컬 파일 경로와 모델명이 포함될 수 있어요.",
+            "Logs may contain local file paths and model names.",
+            muted=True,
+        )
+        self.button(self.row(c), "기록 저장…", "Save log…", self.save_log, lock=False)
+        row = self.row(self.pages[2])
+        self.button(row, "결과 폴더 열기", "Open results", self.open_output)
+        self.button(
+            row,
+            "폰으로 보내기 →",
+            "Send to phone →",
+            lambda: self.tabs.select(3),
+            primary=True,
+        )
 
-    # ------------------------------------------------------------------ voices
-    def add_voice(self, path):
-        if path.suffix.lower() != ".pth" or any(v["path"] == path for v in self.voices):
+    def build_phone(self):
+        c = self.card(self.pages[3], "전송할 폰", "Destination phone")
+        self.label(
+            c,
+            "USB 디버깅으로 연결하고 폰에서 이 PC를 허용하세요. 무선 디버깅도 사용할 수 있어요.",
+            "Connect with USB debugging and authorize this PC, or use wireless debugging.",
+            muted=True,
+        )
+        row = self.row(c)
+        self.device_box = ttk.Combobox(row, state="readonly", width=30)
+        self.device_box.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self.inputs.append((self.device_box, "readonly"))
+        self.device_box.bind("<<ComboboxSelected>>", lambda e: self.device_selected())
+        self.refresh_button = self.button(
+            row, "새로고침", "Refresh", self.refresh_devices
+        )
+        self.button(row, "무선 연결…", "Wireless…", self.wireless)
+        self.phone_info = self.label(c, muted=True)
+        c = self.card(self.pages[3], "완성본 선택", "Choose completed results")
+        self.label(
+            c,
+            "전송 전에 폰의 녹음·통화를 끝내세요. 전송 중 앱을 종료하고 완료 후 다시 엽니다. 같은 이름의 모델을 교체하며 폰의 목소리 설정은 유지합니다.",
+            "End recording/calls before transferring. Transfer stops the phone app and reopens it afterward. Models with the same name are replaced; phone voice settings are preserved.",
+            muted=True,
+        )
+        self.result_list = tk.Listbox(
+            c,
+            selectmode="extended",
+            exportselection=False,
+            height=5,
+            bg="white",
+            fg=INK,
+            selectbackground=LAVENDER,
+            selectforeground=INK,
+            relief="flat",
+            font=("Segoe UI", 10),
+        )
+        self.result_list.pack(fill="x", pady=5)
+        self.inputs.append((self.result_list, "normal"))
+        self.result_info = self.label(c, muted=True)
+        w = tk.Checkbutton(
+            c,
+            text=self.t(
+                "폰에 없는 공통 모델도 보내기",
+                "Also send shared models missing on the phone",
+            ),
+            variable=self.send_common,
+            bg=PANEL,
+            activebackground=PANEL,
+        )
+        w.pack(anchor="w")
+        self.inputs.append((w, "normal"))
+        row = self.row(c)
+        self.send_button = self.button(
+            row, "선택한 모델 보내기", "Send selected models", self.send, primary=True
+        )
+        self.button(row, "완성본 다시 찾기", "Refresh results", self.refresh_results)
+        self.label(
+            c,
+            "디버깅 없이 쓰려면 결과 ZIP을 폰으로 복사하고 앱에서 불러오세요. 공통 모델은 별도로 준비합니다.",
+            "Without debugging, copy the result ZIP to your phone and import it in the app. Shared models are prepared separately.",
+            muted=True,
+        )
+
+    def wheel(self, event):
+        if not isinstance(event.widget, (tk.Listbox, tk.Text, ttk.Combobox)):
+            self.canvases[self.tabs.index("current")].yview_scroll(
+                -int(event.delta / 120), "units"
+            )
+
+    def change_language(self, _event=None):
+        if self.running:
             return
-        v = {"path": path, "name": re.sub(r"[^\w\-]+", "_", path.stem), "info": "확인 중…", "ok": None}
-        self.voices.append(v)
-        self.redraw_list(len(self.voices) - 1)
-        threading.Thread(target=self.inspect, args=(v,), daemon=True).start()
+        tab, selection = self.tabs.index("current"), self.model_list.curselection()
+        self.language = "en" if self.language_box.current() else "ko"
+        for widget in self.winfo_children():
+            widget.destroy()
+        self.build(tab)
+        if selection:
+            self.model_list.selection_set(selection[0])
+            self.show_selected()
+        self.refresh_calib()
+        self.refresh_results()
+        self.save_preferences()
 
-    def inspect(self, v):
-        """Version, rate and pitch from the .pth (torch loads it without running anything)."""
+    def save_preferences(self):
         try:
-            import torch
-            cpt = torch.load(str(v["path"]), map_location="cpu", weights_only=True)
-            if "weight" not in cpt or "config" not in cpt:
-                v["info"], v["ok"] = "RVC 목소리 모델이 아니에요 (학습 중간 저장본이면 weights/의 작은 .pth를 고르세요)", False
-            else:
-                version, rate, f0 = cpt.get("version", "v1"), cpt["config"][-1], cpt.get("f0", 1)
-                v["ok"] = version == "v2" and rate == 48000 and f0 == 1
-                v["info"] = f"{version} · {rate // 1000} kHz · 음높이 {'있음' if f0 == 1 else '없음'}" + ("" if v["ok"] else " → 아직 안 돼요 (v2 · 48 kHz · 음높이 있음만)")
-        except Exception as e:
-            v["info"], v["ok"] = f"읽지 못했어요: {e}", False
-        self.events.put(("list", None))
+            self.preferences.parent.mkdir(parents=True, exist_ok=True)
+            temp = self.preferences.with_suffix(".tmp")
+            temp.write_text(
+                json.dumps(
+                    dict(
+                        language=self.language,
+                        out=self.out.get(),
+                        calib=self.calib.get(),
+                        profile=self.profile.get(),
+                    ),
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            temp.replace(self.preferences)
+        except OSError:
+            pass
 
-    def redraw_list(self, select=None):
-        keep = self.list.curselection()
-        self.list.delete(0, "end")
-        for v in self.voices:
-            mark = {True: "✓", False: "✕", None: "…"}[v["ok"]] + (" 변환됨" if v.get("done") else "")
-            self.list.insert("end", f"{v['path'].name}  →  {v['name']}   {mark}")
-        index = select if select is not None else (keep[0] if keep else None)
-        if index is not None and index < len(self.voices):
-            self.list.selection_set(index)
-        self.show_selected()
+    def background(self, function, callback):
+        def worker():
+            try:
+                value, error = function(), None
+            except Exception as caught:
+                value, error = None, caught
+            self.events.put(("callback", (callback, value, error)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def error_text(self, error):
+        if isinstance(error, work.WorkflowError):
+            return self.t(*ERRORS.get(error.key, (error.key, error.key))) + (
+                "\n" + error.detail if error.detail else ""
+            )
+        return str(error)
+
+    def alert(self, value):
+        messagebox.showinfo(
+            self.t("확인이 필요해요", "Please check"), value, parent=self
+        )
+
+    def pick_voices(self):
+        for path in filedialog.askopenfilenames(
+            parent=self, filetypes=[("RVC", "*.pth")]
+        ):
+            self.add_voice(Path(path))
+
+    def add_voice(self, path):
+        path = path.resolve()
+        if (
+            self.running
+            or path.suffix.lower() != ".pth"
+            or any(v["path"] == path for v in self.voices)
+        ):
+            return
+        name = re.sub(r"[^\w-]+", "_", path.stem)
+        base, index = name, 2
+        while name.casefold() in {v["name"].casefold() for v in self.voices}:
+            name, index = f"{base}_{index}", index + 1
+        voice = dict(path=path, name=name, info=None, error=None, state="checking")
+        self.voices.append(voice)
+        self.inspections += 1
+        self.redraw_list(len(self.voices) - 1)
+
+        def inspected(result, error):
+            self.inspections -= 1
+            if voice not in self.voices:
+                return
+            voice.update(
+                info=result,
+                error=error,
+                state="ready" if result and result["supported"] else "unsupported",
+            )
+            self.redraw_list()
+            self.review()
+
+        self.background(lambda: work.inspect_checkpoint(path), inspected)
 
     def selected(self):
-        sel = self.list.curselection()
+        sel = self.model_list.curselection()
         return self.voices[sel[0]] if sel else None
+
+    def redraw_list(self, selected=None):
+        keep = self.model_list.curselection()
+        self.model_list.delete(0, "end")
+        for v in self.voices:
+            self.model_list.insert(
+                "end",
+                f"{v['name']}  ·  {self.t(*STATES[v['state']])}  —  {v['path'].name}",
+            )
+        index = selected if selected is not None else (keep[0] if keep else None)
+        if index is not None and index < len(self.voices):
+            self.model_list.selection_set(index)
+        self.show_selected()
 
     def show_selected(self):
         v = self.selected()
         self._renaming = True
         self.name.set(v["name"] if v else "")
         self._renaming = False
-        self.info.configure(text=v["info"] if v else "", style="Hint.TLabel" if not v or v["ok"] is not False else "Bad.TLabel")
+        value = self.t(
+            "모델 추가로 시작하세요. 여러 모델을 함께 변환할 수 있어요.",
+            "Add models to get started. You can convert several together.",
+        )
+        if v:
+            value = (
+                self.error_text(v["error"])
+                if v["error"]
+                else self.t(*STATES[v["state"]])
+            )
+            if v["info"]:
+                i = v["info"]
+                value += f"\n{i['version']} · {i['rate']} Hz · f0={i['pitch']}"
+        self.model_info.configure(text=value)
 
-    def rename_selected(self):
-        if getattr(self, "_renaming", False):
+    def rename_selected(self, *_):
+        if self._renaming or self.running:
             return
         v = self.selected()
-        if v and self.name.get().strip():
-            v["name"] = re.sub(r"[^\w\-]+", "_", self.name.get().strip())
+        if v:
+            v["name"] = self.name.get().strip()
+            self.failed.clear()
+            if v["info"] and v["info"]["supported"]:
+                v["state"] = "ready"
             i = self.voices.index(v)
-            mark = {True: "✓", False: "✕", None: "…"}[v["ok"]] + (" 변환됨" if v.get("done") else "")
-            self.list.delete(i)
-            self.list.insert(i, f"{v['path'].name}  →  {v['name']}   {mark}")
-            self.list.selection_set(i)
-
-    def pick_voices(self):
-        for f in filedialog.askopenfilenames(title="목소리 모델 고르기", filetypes=[("RVC 모델", "*.pth")]):
-            self.add_voice(Path(f))
+            self.model_list.delete(i)
+            self.model_list.insert(
+                i, f"{v['name']}  ·  {self.t(*STATES[v['state']])}  —  {v['path'].name}"
+            )
+            self.model_list.selection_set(i)
+            self.review()
 
     def remove_voice(self):
         v = self.selected()
         if v and not self.running:
             self.voices.remove(v)
+            self.failed.discard(v["name"])
             self.redraw_list()
+            self.review()
 
-    # ------------------------------------------------------------------ calibration
-    def pick_calib(self):
-        d = filedialog.askdirectory(title="보정 녹음 폴더", initialdir=self.calib.get())
-        if d:
-            self.calib.set(d)
-            self.refresh_calib()
+    def pick_directory(self, variable):
+        path = filedialog.askdirectory(
+            parent=self, initialdir=variable.get() or str(HERE)
+        )
+        if path:
+            variable.set(path)
+
+    def debounce(self, key, action):
+        timer = getattr(self, "_timer_" + key, None)
+        if timer:
+            self.after_cancel(timer)
+        setattr(self, "_timer_" + key, self.after(350, action))
 
     def refresh_calib(self):
-        n, seconds = recordings(self.calib.get())
-        if n:
-            self.calib_info.configure(text=f"WAV {n}개 · {int(seconds // 60)}분 {int(seconds % 60)}초", style="Ok.TLabel")
-        else:
-            self.calib_info.configure(text="WAV 녹음이 없어요: NPU 정수 디코더는 건너뛰어요", style="Bad.TLabel")
+        self.calib_generation += 1
+        generation, path = self.calib_generation, self.calib.get()
 
-    @staticmethod
-    def open_folder(path):
-        Path(path).mkdir(parents=True, exist_ok=True)
-        os.startfile(path)
+        def show(result, error):
+            if generation != self.calib_generation:
+                return
+            count, seconds, invalid = result or (0, 0, 0)
+            value = (
+                self.t(
+                    f"WAV {count}개 · {int(seconds//60)}분 {int(seconds%60)}초 · 읽기 실패 {invalid}개",
+                    f"{count} WAV files · {int(seconds//60)}m {int(seconds%60)}s · {invalid} unreadable files",
+                )
+                if count
+                else self.t(
+                    "사용 가능한 WAV가 없어요. NPU를 쓰려면 녹음을 선택하세요.",
+                    "No usable WAV files. Choose recordings to use NPU.",
+                )
+            )
+            self.calib_info.configure(text=self.error_text(error) if error else value)
 
-    # ------------------------------------------------------------------ convert
-    def say(self, text):
-        self.log.insert("end", text + "\n")
-        self.log.see("end")
+        self.background(lambda: work.recordings(path), show)
 
-    def convert(self):
-        todo = [v for v in self.voices if v["ok"]]
-        if not todo and not self.common.get():
-            messagebox.showinfo("변환", "변환할 수 있는 목소리 모델(.pth)을 추가하세요.")
+    def review(self):
+        if not hasattr(self, "review_label"):
             return
-        self.refresh_calib()
-        self.running = True
-        self.convert_button.state(["disabled"])
-        self.send_button.state(["disabled"])
-        self.busy(True)
-        # tkinter is not for worker threads: everything they need is read here, on the window's thread
-        opts = dict(out=Path(self.out.get()), calib=self.calib.get(), common=self.common.get(), npu=self.npu.get(),
-                    ncnn=self.ncnn.get())
-        threading.Thread(target=self.convert_all, args=(todo, opts), daemon=True).start()
-
-    def convert_all(self, todo, opts):
-        out, common = opts["out"], opts["common"]
-        failed = []
-        jobs = todo or [None]
-        for i, v in enumerate(jobs):
-            cmd = [str(PY), "-u", str(HERE / "rvc2phone.py")]
-            if v:
-                cmd += [str(v["path"]), "--name", v["name"]]
-            cmd += ["--out", str(out), "--calib", opts["calib"]]
-            if common and i == 0:
-                cmd.append("--common")
-            if not opts["npu"]:
-                cmd.append("--no-npu")
-            if not opts["ncnn"]:
-                cmd.append("--no-ncnn")
-            label = v["name"] if v else "공통 모델"
-            self.events.put(("status", f"{label} ({i + 1}/{len(jobs)}): 시작"))
-            env = dict(os.environ, PYTHONIOENCODING="utf-8")
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
-                                    errors="replace", cwd=str(HERE), env=env, creationflags=NO_WINDOW)
-            for line in proc.stdout:
-                line = line.rstrip()
-                if not line or line.startswith(" ") and "pieces" not in line or "Warning" in line or "warn(" in line:
-                    continue  # pnnx is chatty, and PyTorch warns about its exporter
-                self.events.put(("log", line))
-                for marker, text in STAGES:
-                    if marker in line:
-                        self.events.put(("status", f"{label} ({i + 1}/{len(jobs)}): {text}"))
-            if proc.wait() != 0:
-                failed.append(label)
-                self.events.put(("log", f"!! {label}: 변환 실패 (위 기록 참고)"))
-            elif v:
-                v["done"] = True
-                self.events.put(("list", None))
-        self.events.put(("finished", failed))
-
-    # ------------------------------------------------------------------ phone
-    def refresh_devices(self):
+        count = sum(bool(v["info"] and v["info"]["supported"]) for v in self.voices)
+        self.review_label.configure(
+            text=self.t(f"지원 모델 {count}개", f"{count} supported models")
+            + "\n"
+            + self.t(*PROFILES[self.profile.get()])
+            + "\n"
+            + self.out.get()
+        )
         try:
-            code, text = adb("devices", "-l", timeout=20)
-        except Exception as e:
-            self.devices["values"] = []
-            self.phone_info.configure(text=f"{e}. Android SDK platform-tools를 설치하거나 adb.exe를 platform-tools 폴더에 두세요")
+            missing = work.missing_common(Path(self.out.get()))
+            value = (
+                self.t("없는 공통 모델: ", "Missing shared models: ")
+                + ", ".join(missing)
+                if missing
+                else self.t(
+                    "공통 모델 3개 준비됨 · 다시 만들지 않아요.",
+                    "All 3 shared models ready · They will be reused.",
+                )
+            )
+            self.common_info.configure(text=value)
+        except OSError as error:
+            self.common_info.configure(text=str(error))
+        if not self.running:
+            self.retry_button.state(["!disabled"] if self.failed else ["disabled"])
+
+    def refresh_results(self):
+        if self.running:
             return
-        found = []
-        for line in text.splitlines()[1:]:
-            parts = line.split()
-            if len(parts) >= 2 and parts[1] == "device":
-                model = next((p.split(":", 1)[1] for p in parts if p.startswith("model:")), "")
-                found.append(f"{parts[0]}  {model}")
-        self.devices["values"] = found
-        if found:
-            self.devices.current(0)
-            self.phone_info.configure(text="")
+        self.results = []
+        self.result_list.delete(0, "end")
+        out = Path(self.out.get())
+        try:
+            for folder in sorted(out.iterdir()) if out.is_dir() else []:
+                if (
+                    not folder.is_dir()
+                    or folder.name.startswith(".")
+                    or folder.name in ("common", "tmp")
+                ):
+                    continue
+                try:
+                    work.validate_voice(out, folder.name)
+                except (OSError, ValueError, work.WorkflowError):
+                    continue
+                self.results.append(work.Voice(folder, folder.name))
+                self.result_list.insert("end", folder.name)
+            self.result_info.configure(
+                text=(
+                    ""
+                    if self.results
+                    else self.t(
+                        "완성본이 없어요. 변환하거나 기존 출력 폴더를 선택하세요.",
+                        "No completed results. Convert first or choose an existing output folder.",
+                    )
+                )
+            )
+        except OSError as error:
+            self.result_info.configure(text=str(error))
+        self.review()
+
+    def open_output(self):
+        try:
+            path = Path(self.out.get()).resolve()
+            path.mkdir(parents=True, exist_ok=True)
+            os.startfile(path)
+        except OSError as error:
+            self.alert(str(error))
+
+    def help(self):
+        os.startfile(HERE / ("USAGE.md" if self.language == "en" else "USAGE.ko.md"))
+
+    def set_busy(self, mode):
+        self.running = mode
+        self.started = time.monotonic() if mode else None
+        for widget, normal in self.inputs:
+            widget.configure(state="disabled" if mode else normal)
+        self.cancel_button.state(["!disabled"] if mode == "convert" else ["disabled"])
+        if mode:
+            self.progress.start(12)
         else:
-            self.device.set("")
-            self.phone_info.configure(text="연결된 폰이 없어요. USB 디버깅을 켜고 꽂거나, 무선 연결을 쓰세요.")
+            self.progress.stop()
+            self.progress["value"] = 0
+            self.stage_label.configure(text="")
+            self.review()
+
+    def convert(self, retry=False):
+        if self.running:
+            return
+        if self.inspections:
+            self.alert(
+                self.t(
+                    "모델 검사가 끝날 때까지 기다려 주세요.",
+                    "Wait for model inspection to finish.",
+                )
+            )
+            return
+        voices = [
+            work.Voice(v["path"], v["name"])
+            for v in self.voices
+            if v["info"]
+            and v["info"]["supported"]
+            and (not retry or v["name"] in self.failed)
+        ]
+        options = work.Options(
+            Path(self.out.get()).resolve(),
+            Path(self.calib.get()).resolve(),
+            gpu=self.profile.get() != 2,
+            npu=self.profile.get() == 1,
+            common=self.common.get() or retry and "common" in self.failed,
+        )
+        try:
+            if not self.out.get().strip():
+                raise ValueError(
+                    self.t("출력 폴더를 선택하세요.", "Choose an output folder.")
+                )
+            work.validate_names(v.name for v in voices)
+            if options.npu and voices and not work.recordings(options.calib)[0]:
+                self.alert(
+                    self.t(
+                        "NPU에는 WAV 보정 녹음이 필요해요. 녹음을 선택하거나 일반 Android / CPU 옵션을 선택하세요.",
+                        "NPU requires WAV calibration audio. Choose recordings or use General Android / CPU only.",
+                    )
+                )
+                self.tabs.select(1)
+                return
+            if not voices and not (work.missing_common(options.out) and options.common):
+                self.alert(
+                    self.t(
+                        "지원 모델을 추가하거나 공통 모델 준비를 선택하세요.",
+                        "Add supported models or enable shared-model setup.",
+                    )
+                )
+                return
+            existing = [
+                v.name
+                for v in voices
+                if (options.out / v.name).exists()
+                or (options.out / f"{v.name}.zip").exists()
+            ]
+            if existing and not messagebox.askyesno(
+                self.t("결과 교체", "Replace output"),
+                self.t(
+                    "새 변환 성공 후 다음 결과를 교체할까요?",
+                    "Replace these results after successful conversion?",
+                )
+                + "\n\n"
+                + "\n".join(existing),
+                parent=self,
+            ):
+                return
+        except (OSError, ValueError, work.WorkflowError) as error:
+            self.alert(self.error_text(error))
+            return
+        self.save_preferences()
+        self.runner = work.ProcessRunner()
+        self.failed = set()
+        self.set_busy("convert")
+        self.tabs.select(2)
+        self.status.configure(text=self.t("변환 준비 중…", "Preparing conversion…"))
+        self.say(self.review_label.cget("text"))
+
+        def finished(result, error):
+            self.set_busy(None)
+            if error:
+                self.failed = {v.name for v in voices} | (
+                    {"common"} if options.common else set()
+                )
+                self.say(self.error_text(error))
+                self.status.configure(
+                    text=self.t(
+                        "변환 실패 · 기록을 확인하세요.",
+                        "Conversion failed · Check the log.",
+                    )
+                )
+            else:
+                self.failed = set(result["failed"])
+                done, bad = len(result["completed"]), len(result["failed"])
+                self.status.configure(
+                    text=self.t(
+                        f"완료 {done}개 · 실패/미완료 {bad}개",
+                        f"{done} completed · {bad} failed / incomplete",
+                    )
+                )
+                for v in self.voices:
+                    if v["name"] in result["failed"]:
+                        v["state"] = "cancelled" if result["cancelled"] else "failed"
+                    elif v["name"] in result["completed"]:
+                        v["state"] = "done"
+            self.redraw_list()
+            self.refresh_results()
+            if self.close_pending:
+                self.destroy()
+
+        self.background(
+            lambda: work.convert_batch(voices, options, PY, self.runner, self.emit),
+            finished,
+        )
+
+    def cancel(self):
+        if self.running == "convert" and self.runner:
+            self.runner.cancel()
+            self.cancel_button.state(["disabled"])
+            self.status.configure(
+                text=self.t(
+                    "중지하고 임시 파일을 정리하고 있어요…",
+                    "Stopping and cleaning temporary files…",
+                )
+            )
+
+    def refresh_devices(self):
+        if self.running or self.device_busy:
+            return
+        self.device_busy = True
+        self.refresh_button.state(["disabled"])
+        self.phone_info.configure(text=self.t("연결 확인 중…", "Checking connection…"))
+
+        def refreshed(result, error):
+            self.device_busy = False
+            self.found_devices = result or []
+            self.display_devices()
+            if error:
+                self.phone_info.configure(text=self.error_text(error))
+            if not self.running:
+                self.refresh_button.state(["!disabled"])
+
+        self.background(work.devices, refreshed)
+
+    def display_devices(self):
+        self.device_box["values"] = [
+            f"{d['model'] or d['serial']} · {d['serial']} · {d['state']}"
+            for d in self.found_devices
+        ]
+        if self.found_devices:
+            self.device_box.current(
+                next(
+                    (
+                        i
+                        for i, d in enumerate(self.found_devices)
+                        if d["state"] == "device"
+                    ),
+                    0,
+                )
+            )
+        else:
+            self.device_box.set("")
+        self.device_selected()
+
+    def device_selected(self):
+        index = self.device_box.current()
+        state = self.found_devices[index]["state"] if index >= 0 else "no_device"
+        self.phone_info.configure(
+            text=(
+                self.t("연결됨", "Connected")
+                if state == "device"
+                else self.t(*ERRORS[state])
+            )
+        )
+
+    def selected_device(self):
+        index = self.device_box.current()
+        if index < 0:
+            raise work.WorkflowError("no_device")
+        device = self.found_devices[index]
+        if device["state"] != "device":
+            raise work.WorkflowError(device["state"])
+        return device["serial"]
+
+    def detect(self):
+        try:
+            serial = self.selected_device()
+        except work.WorkflowError as error:
+            self.alert(self.error_text(error))
+            self.tabs.select(3)
+            return
+        self.detect_button.state(["disabled"])
+        self.recommendation.configure(text=self.t("확인 중…", "Checking…"))
+
+        def detected(result, error):
+            if not self.running:
+                self.detect_button.state(["!disabled"])
+                if result:
+                    self.profile.set(1 if result == "snapdragon" else 0)
+                    self.review()
+            self.recommendation.configure(
+                text=(
+                    self.error_text(error)
+                    if error
+                    else self.t(
+                        "추천 옵션을 적용했어요. 직접 바꿀 수도 있어요.",
+                        "Recommended options applied. You can change them.",
+                    )
+                )
+            )
+
+        self.background(lambda: work.phone_profile(serial), detected)
+
+    def send(self):
+        if self.running:
+            return
+        try:
+            serial = self.selected_device()
+            voices = [self.results[i] for i in self.result_list.curselection()]
+            if not voices and not self.send_common.get():
+                self.alert(
+                    self.t(
+                        "보낼 완성본 또는 공통 모델을 선택하세요.",
+                        "Select completed results or shared models to send.",
+                    )
+                )
+                return
+        except work.WorkflowError as error:
+            self.alert(self.error_text(error))
+            return
+        out, shared = Path(self.out.get()).resolve(), self.send_common.get()
+        self.save_preferences()
+        self.set_busy("send")
+
+        def sent(count, error):
+            self.set_busy(None)
+            self.status.configure(
+                text=(
+                    self.t(
+                        "전송 실패 · 연결을 확인하고 재시도하세요. 앱이 중지된 상태일 수 있어요.",
+                        "Transfer failed · Check the connection and retry. The phone app may still be stopped.",
+                    )
+                    if error
+                    else self.t(
+                        f"파일 {count}개 전송 완료. 폰 앱에서 목소리를 확인하세요.",
+                        f"{count} files sent. Check your voice models in the phone app.",
+                    )
+                )
+            )
+            if error:
+                self.say(self.error_text(error))
+                self.tabs.select(2)
+
+        self.background(
+            lambda: work.transfer(serial, voices, out, shared, self.emit), sent
+        )
 
     def wireless(self):
         win = tk.Toplevel(self, bg=PANEL)
-        win.title("무선 디버깅 연결")
+        win.title(self.t("무선 디버깅 연결", "Wireless debugging"))
         win.transient(self)
-        pad = {"padx": 12, "pady": 4, "sticky": "w"}
-        tk.Label(win, bg=PANEL, fg=MUTED, justify="left", wraplength=420,
-                 text="폰: 설정 › 개발자 옵션 › 무선 디버깅. 처음 한 번은 '페어링 코드로 기기 페어링'의 주소와 6자리 코드로 "
-                      "페어링하고, 그다음은 화면의 'IP 주소 및 포트'로 연결해요.").grid(row=0, column=0, columnspan=3, padx=12, pady=(12, 6))
-        pair_addr, code, conn_addr = tk.StringVar(), tk.StringVar(), tk.StringVar()
-        for r, (label, var) in enumerate([("페어링 주소 (IP:포트)", pair_addr), ("페어링 코드", code), ("연결 주소 (IP:포트)", conn_addr)], 1):
-            tk.Label(win, text=label, bg=PANEL, fg=TEXT).grid(row=r, column=0, **pad)
-            ttk.Entry(win, textvariable=var, width=26).grid(row=r, column=1, **pad)
-        result = tk.Label(win, text="", bg=PANEL, fg=STRONG, wraplength=420, justify="left")
-        result.grid(row=5, column=0, columnspan=3, padx=12, pady=(6, 12), sticky="w")
+        win.grab_set()
+        body = tk.Frame(win, bg=PANEL, padx=22, pady=18)
+        body.pack(fill="both", expand=True)
+        self.label(
+            body,
+            "폰의 무선 디버깅 → 페어링 코드로 기기 페어링에서 주소와 코드를 확인하세요.\n페어링 후 기본 화면의 연결 주소를 사용하세요. 두 포트는 보통 달라요.",
+            "Phone: Wireless debugging → Pair device with pairing code.\nAfter pairing, use the connection address on the main screen. The two ports are usually different.",
+            muted=True,
+        )
+        variables = [tk.StringVar() for _ in range(3)]
+        for i, (ko, en) in enumerate(
+            [
+                ("페어링 주소 (IP:포트)", "Pairing address (IP:port)"),
+                ("6자리 페어링 코드", "Six-digit pairing code"),
+                ("연결 주소 (IP:포트)", "Connection address (IP:port)"),
+            ]
+        ):
+            self.label(body, ko, en)
+            ttk.Entry(
+                body, textvariable=variables[i], width=48, show="•" if i == 1 else ""
+            ).pack(fill="x", pady=(0, 8))
+        result = self.label(body)
+        buttons = []
 
-        def run(*args):
+        def run(pair):
+            address = variables[0 if pair else 2].get().strip()
+            code = variables[1].get().strip()
+            if not re.fullmatch(r"(?:[\w.-]+|\[[0-9a-fA-F:]+\]):\d{1,5}", address) or (
+                pair and not re.fullmatch(r"\d{6}", code)
+            ):
+                result.configure(
+                    text=self.t(
+                        "IP:포트 주소와 6자리 코드를 확인하세요.",
+                        "Check the IP:port address and six-digit code.",
+                    )
+                )
+                return
+            for b in buttons:
+                b.state(["disabled"])
+            result.configure(text=self.t("처리 중…", "Working…"))
+
+            def finished(value, error):
+                if win.winfo_exists():
+                    variables[1].set("")
+                    result.configure(text=self.error_text(error) if error else value)
+                    for b in buttons:
+                        b.state(["!disabled"])
+                self.refresh_devices()
+
+            self.background(
+                lambda: work.adb(
+                    *(["pair", address, code] if pair else ["connect", address]),
+                    timeout=35,
+                ),
+                finished,
+            )
+
+        row = self.row(body)
+        buttons.append(
+            self.button(row, "페어링", "Pair", lambda: run(True), lock=False)
+        )
+        buttons.append(
+            self.button(row, "연결", "Connect", lambda: run(False), lock=False)
+        )
+
+    def emit(self, kind, value):
+        self.events.put((kind, value))
+
+    def say(self, value):
+        lines = str(value).splitlines()
+        if not lines:
+            return
+        overflow = max(0, len(self.log_lines) + len(lines) - 1500)
+        self.log_lines = (self.log_lines + lines)[-1500:]
+        self.log.configure(state="normal")
+        self.log.insert("end", "\n".join(lines) + "\n")
+        if overflow:
+            self.log.delete("1.0", f"{overflow+1}.0")
+        self.log.see("end")
+        self.log.configure(state="disabled")
+
+    def save_log(self):
+        path = filedialog.asksaveasfilename(
+            parent=self,
+            defaultextension=".txt",
+            initialfile="converter-log.txt",
+            filetypes=[("Text", "*.txt")],
+        )
+        if path:
             try:
-                _, text = adb(*args, timeout=30)
-            except Exception as e:
-                text = str(e)
-            result.configure(text=text[-300:])
-            self.refresh_devices()
+                Path(path).write_text("\n".join(self.log_lines), encoding="utf-8")
+            except OSError as error:
+                self.alert(str(error))
 
-        ttk.Button(win, text="페어링", command=lambda: run("pair", pair_addr.get().strip(), code.get().strip())).grid(row=2, column=2, padx=12)
-        ttk.Button(win, text="연결", command=lambda: run("connect", conn_addr.get().strip())).grid(row=3, column=2, padx=12)
-
-    def send(self):
-        serial = self.device.get().split()[0] if self.device.get() else ""
-        if not serial:
-            messagebox.showinfo("폰으로 보내기", "연결된 폰을 고르세요.")
-            return
-        v = self.selected()
-        out = Path(self.out.get())
-        voices = [v] if v else [x for x in self.voices if x.get("done")]
-        voices = [x for x in voices if (out / x["name"] / f"{x['name']}.enc.onnx").is_file()]
-        if not voices and not self.send_common.get():
-            messagebox.showinfo("폰으로 보내기", "보낼 변환 결과가 없어요. 먼저 변환하세요.")
-            return
-        self.running = True
-        self.send_button.state(["disabled"])
-        self.convert_button.state(["disabled"])
-        self.busy(True)
-        threading.Thread(target=self.send_all, args=(serial, voices, out, self.send_common.get()), daemon=True).start()
-
-    def send_all(self, serial, voices, out, with_common):
-        try:
-            code, text = adb("-s", serial, "shell", "pm", "path", PACKAGE, timeout=20)
-            if "package:" not in text:
-                raise RuntimeError("폰에 Voice Studio 앱이 없어요. 앱을 먼저 설치하세요.")
-            files = []
-            for v in voices:
-                folder = out / v["name"]
-                for part in ("enc.onnx", "dec.onnx", "dec.w8a16.onnx", "dec.ncnn.param", "dec.ncnn.bin"):
-                    f = folder / f"{v['name']}.{part}"
-                    if f.is_file():
-                        files.append((f, f.name))
-                if (folder / "settings.json").is_file():  # seeds a voice the phone does not have yet; never overwrites
-                    files.append((folder / "settings.json", f"{v['name']}.settings.json"))
-            if with_common:
-                code, have = adb("-s", serial, "shell", f"ls {REMOTE}/common", timeout=20)
-                for name in ("hubert.onnx", "rmvpe.onnx", "hubert.htp.onnx"):
-                    f = out / "common" / name
-                    if f.is_file() and name not in have.split():
-                        files.append((f, name))
-            adb("-s", serial, "shell", "am", "start", "-n", f"{PACKAGE}/.MainActivity", timeout=20)  # makes its folder
-            total = len(files)
-            for i, (f, remote) in enumerate(files, 1):
-                self.events.put(("status", f"폰으로 보내는 중 ({i}/{total}) {remote} · {f.stat().st_size / 1e6:.0f} MB"))
-                code, text = adb("-s", serial, "push", str(f), f"{REMOTE}/{remote}", timeout=1800)
-                if code != 0:
-                    raise RuntimeError(f"{remote}: {text[-200:]}")
-                self.events.put(("log", f"보냄: {remote}"))
-            # the app sorts the loose files into place when it opens
-            adb("-s", serial, "shell", "am", "force-stop", PACKAGE, timeout=20)
-            adb("-s", serial, "shell", "am", "start", "-n", f"{PACKAGE}/.MainActivity", timeout=20)
-            time.sleep(3)
-            code, left = adb("-s", serial, "shell", f"ls {REMOTE}", timeout=20)
-            # (a voice's settings.json only seeds a new voice: the app drops it when the phone has the voice already)
-            stuck = [name for _, name in files if name in left.split() and not name.endswith(".settings.json")]
-            if stuck:
-                msg = "앱이 아직 파일을 옮기지 못했어요 (앱을 한 번 열면 옮겨요): " + ", ".join(stuck[:4])
-            else:
-                msg = f"폰에 넣었어요: {', '.join(v['name'] for v in voices) or '공통 모델'}. 앱의 설정에서 목소리를 고르세요."
-            self.events.put(("sent", msg))
-        except Exception as e:
-            self.events.put(("sent", f"보내지 못했어요: {e}"))
-
-    # ------------------------------------------------------------------ events from the worker threads
     def pump(self):
         try:
-            while True:
+            for _ in range(80):
                 kind, value = self.events.get_nowait()
-                if kind == "log":
+                if kind == "callback":
+                    callback, result, error = value
+                    callback(result, error)
+                    if self.close_pending and not self.running:
+                        return
+                elif kind == "log":
                     self.say(value)
-                elif kind == "status":
-                    self.status.configure(text=value)
-                elif kind == "list":
-                    self.redraw_list()
-                elif kind in ("finished", "sent"):
-                    self.running = False
-                    self.busy(False)
-                    self.convert_button.state(["!disabled"])
-                    self.send_button.state(["!disabled"])
-                    if kind == "finished":
-                        self.status.configure(text="변환 실패: " + ", ".join(value) if value else
-                                              "변환 끝: 출력 폴더를 열거나 아래에서 폰으로 보내세요")
-                        self.common.set(not (Path(self.out.get()) / "common/hubert.onnx").is_file())
-                    else:
-                        self.status.configure(text=value)
-                        self.phone_info.configure(text=value)
+                elif kind == "job":
+                    name, index, total = value
+                    name = (
+                        self.t("공통 모델", "Shared models")
+                        if name == "common"
+                        else name
+                    )
+                    self.status.configure(
+                        text=self.t(
+                            f"작업 {index}/{total} · {name}",
+                            f"Job {index}/{total} · {name}",
+                        )
+                    )
+                elif kind == "stage":
+                    self.stage_label.configure(
+                        text=self.t(*STAGES.get(value, (value, value)))
+                    )
+                elif kind == "job_error":
+                    name, key, detail = value
+                    self.say(
+                        name
+                        + ": "
+                        + self.t(*ERRORS.get(key, (key, key)))
+                        + "\n"
+                        + detail
+                    )
+                elif kind == "job_done":
+                    self.say(value[0] + ": " + self.t("완료", "Done"))
+                elif kind == "transfer_file":
+                    name, index, total = value
+                    self.status.configure(
+                        text=self.t(
+                            f"파일 {index}/{total} 전송 중 · {name}",
+                            f"Sending file {index}/{total} · {name}",
+                        )
+                    )
         except queue.Empty:
             pass
-        self.after(100, self.pump)
+        if self.started:
+            elapsed = int(time.monotonic() - self.started)
+            self.elapsed.configure(
+                text=self.t("경과 ", "Elapsed ") + f"{elapsed//60:02d}:{elapsed%60:02d}"
+            )
+        self.after(75, self.pump)
 
-
-def main():
-    App([a for a in sys.argv[1:] if a.lower().endswith(".pth")]).mainloop()
+    def close(self):
+        if self.running == "send":
+            self.alert(
+                self.t(
+                    "파일 전송이 끝난 뒤 닫아 주세요.",
+                    "Wait for the transfer to finish before closing.",
+                )
+            )
+            return
+        if self.running:
+            if messagebox.askyesno(
+                self.t("변환 취소", "Cancel conversion"),
+                self.t("변환을 취소하고 닫을까요?", "Cancel conversion and close?"),
+                parent=self,
+            ):
+                self.close_pending = True
+                self.cancel()
+            return
+        self.save_preferences()
+        self.destroy()
 
 
 if __name__ == "__main__":
-    main()
+    App([a for a in sys.argv[1:] if a.lower().endswith(".pth")]).mainloop()

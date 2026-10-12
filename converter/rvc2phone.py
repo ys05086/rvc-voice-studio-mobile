@@ -377,7 +377,7 @@ def npu_decoder(args, folder, name, dec):
         print("\nno NPU decoder: put a few minutes of voice recordings (WAV) into "
               f"{Path(args.calib[0])} and convert again (Android's NPU then sounds like the 32-bit decoder)")
         return
-    common = args.out / "common"
+    common = args.common_dir or args.out / "common"
     if not ((common / "hubert.onnx").is_file() and (common / "rmvpe.onnx").is_file()):
         print("\nthe NPU decoder's calibration needs HuBERT and RMVPE: building the shared models first", flush=True)
         common.mkdir(exist_ok=True)
@@ -396,7 +396,12 @@ def main():
     parser.add_argument("--calib", nargs="+", default=[str(HERE / "calib")],
                         help="recordings (WAV files or folders) to calibrate the NPU decoder on (default: calib/)")
     parser.add_argument("--no-npu", action="store_true", help="skip the NPU decoder (NAME.dec.w8a16.onnx)")
+    parser.add_argument("--common-dir", type=Path, help="reuse shared models from this folder for NPU calibration")
+    parser.add_argument("--progress-events", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    def stage(name):
+        if args.progress_events:
+            print('@rvc2phone ' + json.dumps({'stage': name}), flush=True)
     if not args.voice and not args.common:
         parser.error("give a voice model (.pth), --common, or both")
     sys.path.insert(0, str(HERE))
@@ -409,25 +414,34 @@ def main():
     if args.common:
         common = args.out / "common"
         common.mkdir(exist_ok=True)
+        stage('hubert')
         export_hubert(common)
+        stage('rmvpe')
         export_rmvpe(common)
         from htp_export import fuse
+        stage('hubert_npu')
         fuse(common / "hubert.onnx", common / "hubert.htp.onnx")
         print(f"\nshared models: {common} (put hubert.onnx, hubert.htp.onnx and rmvpe.onnx into the app's common folder)")
     if args.voice:
         name = args.name or args.voice.stem
+        from workflow import safe_name
+        name = safe_name(name)
         folder = args.out / name
         folder.mkdir(exist_ok=True)
+        stage('onnx')
         dec = export_voice(folder, name, load_voice(args.voice))
         (folder / "settings.json").write_text(json.dumps({"pitch": 0, "formant": 0}, indent=1), encoding="utf-8")
         if not args.no_ncnn:
+            stage('gpu')
             try:
                 from make_ncnn import convert
                 convert(dec)
             except FileNotFoundError as e:
                 print(f"no Android GPU decoder ({e}); the app then decodes on the CPU. pip install pnnx to make it.")
         if not args.no_npu:
+            stage('npu')
             npu_decoder(args, folder, name, dec)
+        stage('archive')
         archive = args.out / f"{name}.zip"
         with zipfile.ZipFile(archive, "w", zipfile.ZIP_STORED) as z:
             for f in sorted(folder.iterdir()):
