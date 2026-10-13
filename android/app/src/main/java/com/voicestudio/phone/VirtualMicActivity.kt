@@ -120,28 +120,37 @@ object VirtualMicSession {
                 n("intonation_expand",0.0) != 0.0, n("intonation_ratio",1.15), n("rms_mix_rate",0.0))
             val profile = ModelLivePreferences(prefs, model.name)
             val saved = LivePreferences.read(virtualMic = true, getInt = profile::getInt)
-            val block = intent.getIntExtra("block",saved.block).also { require(it in 15..50) }
+            var block = intent.getIntExtra("block",saved.block).also { require(it in 15..50) }
+            val requestedBlock = block
+            val autoBlock = profile.getBoolean("live_auto_block", false)
             val inputDb = intent.getFloatExtra("input_gain_db",12f).also { require(it in 0f..36f) }
             val threshold = intent.getFloatExtra("threshold_db",saved.thresholdDb.toFloat()).also { require(it in -120f..-30f) }
             val outputDb = intent.getFloatExtra("gain_db",saved.gainDb.toFloat()).also { require(it in -12f..36f) }
-            val params = saved.copy(block = block,
+            var params = saved.copy(block = block,
                 context = intent.getIntExtra("context", profile.getInt("live_context", LiveParams.defaultContext(block, saved.crossfade))), thresholdDb = threshold.toDouble(), gainDb = outputDb.toDouble(),
                 skipQuiet = !intent.getBooleanExtra("no_quiet_skip",false))
             val dec = if (File(model,"model.dec.w8a16.onnx").isFile) "model.dec.w8a16.onnx" else "model.dec.onnx"
             val threads = intent.getIntExtra("threads",1).also { require(it in 1..8) }
             android.system.Os.setenv("ADSP_LIBRARY_PATH", "${context.applicationInfo.nativeLibraryDir};/system/lib/rfsa/adsp;/system/vendor/lib/rfsa/adsp;/dsp", true)
-            log("CONFIG model=${model.name} block_ms=${block*10} context_ms=${params.context*10} window_ms=${params.window(null)*10} crossfade_ms=${params.crossfade*10} cushion_ms=${(params.cushion*1000).roundToInt()} threshold_db=${params.thresholdDb} input_gain_db=$inputDb output_gain_db=${params.gainDb} decoder=$dec threads=$threads bypass=false")
-            engine = Rvc(File(base,"common"), model, threads, "qnn_htp", dec, "qnn_htp",
-                live=Rvc.LiveShape(block,params.tail,settings.formant,params.window(null)))
-            log("OPTIMIZATION fixed_formant=${settings.formant} decoder_frames=${engine.decFrames} skip_quiet=${params.skipQuiet}")
-            val core = LiveCore(engine,params)
-            var warmupMaxMs = 0.0
-            repeat(3) {
+            var core: LiveCore
+            var warmupMaxMs: Double
+            while (true) {
                 if (!running) throw InterruptedException()
-                val begun=System.nanoTime()
-                core.step(FloatArray(core.w48),settings,allowQuietSkip=false)
-                warmupMaxMs=max(warmupMaxMs,(System.nanoTime()-begun)/1e6)
+                engine?.close(); engine = null
+                if (autoBlock) status = str(R.string.live_auto_block_calibrating, block * 10)
+                engine = Rvc(File(base,"common"), model, threads, "qnn_htp", dec, "qnn_htp",
+                    live=Rvc.LiveShape(block,params.tail,settings.formant,params.window(null)))
+                core = LiveCore(engine, params)
+                val timing = AutoBlock.measure(core, settings) { if (!running) throw InterruptedException() }
+                warmupMaxMs = timing.maximumMs
+                log("BLOCK_CALIBRATION automatic=$autoBlock block_ms=${block*10} steady_ms=${timing.steadyMs}")
+                val next = if (autoBlock) AutoBlock.nextBlock(block, timing.maximumMs)
+                    ?: error(str(R.string.live_auto_block_slow)) else block
+                if (next == block) break
+                block = next; params = params.copy(block = block)
             }
+            log("CONFIG model=${model.name} block_ms=${block*10} requested_block_ms=${requestedBlock*10} auto_block=$autoBlock context_ms=${params.context*10} window_ms=${params.window(null)*10} crossfade_ms=${params.crossfade*10} cushion_ms=${(params.cushion*1000).roundToInt()} threshold_db=${params.thresholdDb} input_gain_db=$inputDb output_gain_db=${params.gainDb} decoder=$dec threads=$threads bypass=false")
+            log("OPTIMIZATION fixed_formant=${settings.formant} decoder_frames=${engine!!.decFrames} skip_quiet=${params.skipQuiet}")
             // Quiet blocks finish early; retain room for a full inference when speech begins.
             val bufferMs = (params.cushion * 1000).roundToInt() + 20
             val startDelayMs=(block*10+warmupMaxMs+bufferMs).roundToInt().coerceIn(block*10+bufferMs,1500)
@@ -215,7 +224,7 @@ object VirtualMicSession {
                         consumed += core.b48
                         val x = ring.copy(consumed-core.w48,core.w48,contextStart)
                         val start = System.nanoTime()
-                        val before = engine.timing.copyOf()
+                        val before = engine!!.timing.copyOf()
                         val y = core.step(x,settings)
                         val ms = (System.nanoTime()-start)/1e6
                         // A stalled inference must not replay an old block before jumping forward.

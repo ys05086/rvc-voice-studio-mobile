@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="live_auto_block">블록 길이 자동 조절</string>
+    <string name="live_auto_block_help">목소리별로 선택해서 사용합니다. 시작 전 처리 시간을 측정해 추가 문맥은 유지하고 블록을 최대 0.50초까지 늘립니다. 지연과 준비 시간이 늘 수 있습니다. 저장된 블록은 최소값이며 실제 블록은 상태에 표시됩니다. 끄면 지정한 값을 그대로 사용합니다. 기기 부하가 달라지면 다시 시작해 재측정하세요.</string>
+    <string name="live_auto_block_calibrating">처리 여유 확인 중 · 블록 %1$d ms</string>
+    <string name="live_auto_block_slow">블록 0.50초에서도 처리 여유가 부족합니다. 추가 문맥을 줄이거나 더 가벼운 모델로 다시 시도해 주세요. 저장된 설정은 변경하지 않았습니다.</string>
+</resources>

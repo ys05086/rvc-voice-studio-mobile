@@ -8,7 +8,9 @@ Unofficial voice conversion for Android phones, based on [RVC](https://github.co
 
 Recording, file conversion, local live monitoring and in-app web calls do **not** require Shizuku.
 
-**New in 0.4.2:** experimental cellular call conversion on Galaxy S23+ (SM-S916N), and realtime settings saved separately for each voice model. [Phone-call setup and supported routes](docs/USAGE.md#experimental-cellular-phone-calls)
+**New in 0.4.3:** optional automatic block length, saved per voice. Before starting, it measures processing time and increases the session block when needed, preserving additional context and the saved manual block. Enable it in Live settings or Virtual microphone → Voice and live settings. It starts off; more processing headroom may mean more delay.
+
+**Also available since 0.4.2:** experimental cellular call conversion on Galaxy S23+ (SM-S916N), and realtime settings saved separately for each voice model. [Phone-call setup and supported routes](docs/USAGE.md#experimental-cellular-phone-calls)
 
 ## Screenshots
 

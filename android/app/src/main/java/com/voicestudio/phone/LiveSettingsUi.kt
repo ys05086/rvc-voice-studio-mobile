@@ -6,6 +6,7 @@ import android.view.Gravity
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
+import android.widget.Switch
 import java.util.Locale
 
 /** Shared controls for the Live page and the virtual microphone's settings dialog. */
@@ -55,6 +56,24 @@ class LiveSettingsUi(private val context: Context, private val prefs: () -> Mode
     private fun params() = LivePreferences.read(virtualMic, prefs()::getInt)
 
     fun timing(parent: LinearLayout) {
+        var refreshing = false
+        val automatic = Switch(context).apply {
+            text = str(R.string.live_auto_block)
+            textSize = 13f
+            setOnCheckedChangeListener { _, enabled ->
+                if (!refreshing) { prefs().putBoolean("live_auto_block", enabled); changed() }
+            }
+        }
+        val refreshAutomatic = {
+            refreshing = true
+            automatic.isChecked = prefs().getBoolean("live_auto_block", false)
+            refreshing = false
+        }
+        refreshers.add(refreshAutomatic); refreshAutomatic()
+        parent.addView(automatic)
+        parent.addView(TextView(context).apply {
+            text = str(R.string.live_auto_block_help); textSize = 11f; setTextColor(context.getColor(R.color.muted))
+        })
         fun setting(key: String, label: Int, min: Int, max: Int, low: String, high: String,
                     read: () -> Int, format: (Int) -> String) = slider(parent, str(label), min, max, low, high,
             read, { prefs().putInt(key, it); refresh() }, format)

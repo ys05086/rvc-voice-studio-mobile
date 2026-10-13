@@ -86,6 +86,8 @@ Installing Shizuku is not the same as starting it. This implementation requires 
 
 **No sound or original voice:** confirm Shizuku is running and authorized, the correct model/target is selected, and the destination actually has an active mic. Close and reopen its mic test after preparing virtual mic. Muting a call may leave its microphone active; leave the test/call input to trigger idle. Check the input/output meters and processing details. If permissions were denied, use Shizuku's authorized apps or Android app settings. The notification hint opens notification settings.
 
+**Optional automatic block length:** under Live settings or Virtual microphone → Voice and live settings, enable **Adjust block length automatically** for the selected voice. It preserves additional context and your saved block value, then benchmarks before starting and increases the session block up to 0.50 seconds if needed. The saved block is the minimum; status shows the actual value. This trades more latency and preparation time for processing headroom. It starts off, is shared by both modes and is saved per voice. If 0.50 seconds still lacks headroom, startup stops with an explanation. Recalibrate by restarting after a major change in device load; this is not continuous runtime adjustment.
+
 ### Experimental cellular phone calls
 
 This separate mode currently supports the tested Samsung S23+ **SM-S916N** only. It requires shell-mode Shizuku, without root. Other S23+ variants and other phones are not enabled yet.

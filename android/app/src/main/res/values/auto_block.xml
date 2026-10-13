@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="live_auto_block">Adjust block length automatically</string>
+    <string name="live_auto_block_help">Optional, saved per voice. Before starting, measure processing time and increase the block up to 0.50 s while preserving additional context. This may increase delay and preparation time. Your saved block is the minimum; the active block appears in the status. Turn off to use your exact block. Restart to recalibrate if device load changes.</string>
+    <string name="live_auto_block_calibrating">Checking processing capacity · %1$d ms block</string>
+    <string name="live_auto_block_slow">Even a 0.50 s block has too little processing headroom. Reduce additional context or use a lighter model, then try again. Your saved settings were not changed.</string>
+</resources>

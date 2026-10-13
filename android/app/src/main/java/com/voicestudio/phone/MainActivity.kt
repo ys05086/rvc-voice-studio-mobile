@@ -1180,7 +1180,8 @@ class MainActivity : Activity() {
         if (recorder != null) { toast(str(R.string.ui_stop_recording_first)); return }
         if (busy) { toast(str(R.string.ui_wait_for_conversion_to_finish)); return }
         player.stop()
-        val params = liveParams()
+        var params = liveParams()
+        val autoBlock = livePrefs().getBoolean("live_auto_block", false)
         val devices = liveDevices(dir)
         val ep = devices.ep
         val liveDec = if (decFile != "model.dec.onnx") decFile else devices.file
@@ -1198,14 +1199,24 @@ class MainActivity : Activity() {
         updateConvertButton()
         thread {
             try {
-                val key = "${dir.path}|$ep|$liveDec|$front|$threads|${params.block}|${params.tail}|${params.window(null)}"
-                if (LiveSession.rvcKey != key) {
-                    LiveSession.rvc?.close()
-                    LiveSession.rvc = null
-                    LiveSession.rvcKey = ""
-                    liveMessage = str(R.string.ui_preparing_model_the_first_run_may_take)
-                    LiveSession.rvc = Rvc(commonDir, dir, threads, ep, liveDec, front, live = Rvc.LiveShape(params.block, params.tail, windowFrames = params.window(null)), allowFallback = true)
-                    LiveSession.rvcKey = key
+                while (true) {
+                    val key = "${dir.path}|$ep|$liveDec|$front|$threads|${params.block}|${params.tail}|${params.window(null)}"
+                    if (LiveSession.rvcKey != key) {
+                        LiveSession.rvc?.close()
+                        LiveSession.rvc = null
+                        LiveSession.rvcKey = ""
+                        liveMessage = str(R.string.ui_preparing_model_the_first_run_may_take)
+                        LiveSession.rvc = Rvc(commonDir, dir, threads, ep, liveDec, front, live = Rvc.LiveShape(params.block, params.tail, windowFrames = params.window(null)), allowFallback = true)
+                        LiveSession.rvcKey = key
+                    }
+                    if (!autoBlock || bypass) break
+                    liveMessage = str(R.string.live_auto_block_calibrating, params.block * 10)
+                    val timing = AutoBlock.measure(LiveCore(LiveSession.rvc!!, params), settings)
+                    val next = AutoBlock.nextBlock(params.block, timing.maximumMs)
+                        ?: error(str(R.string.live_auto_block_slow))
+                    android.util.Log.i("VoiceStudio", "BLOCK_CALIBRATION block_ms=${params.block*10} steady_ms=${timing.steadyMs} next_ms=${next*10}")
+                    if (next == params.block) break
+                    params = params.copy(block = next)
                 }
                 val e = LiveEngine(applicationContext, LiveSession.rvc!!, params, settings, speaker, bypass, base)
                 e.setGain(params.gainDb)
