@@ -86,9 +86,22 @@ Installing Shizuku is not the same as starting it. This implementation requires 
 
 **No sound or original voice:** confirm Shizuku is running and authorized, the correct model/target is selected, and the destination actually has an active mic. Close and reopen its mic test after preparing virtual mic. Muting a call may leave its microphone active; leave the test/call input to trigger idle. Check the input/output meters and processing details. If permissions were denied, use Shizuku's authorized apps or Android app settings. The notification hint opens notification settings.
 
+### Experimental cellular phone calls
+
+This separate mode currently supports the tested Samsung S23+ **SM-S916N** only. It requires shell-mode Shizuku, without root. Other S23+ variants and other phones are not enabled yet.
+
+1. Open **Virtual microphone**, enable **Phone calls · Experimental**, choose your voice and tap **Start virtual mic**. Wait for **Waiting for a phone call**. There is no call-start deadline, and the physical microphone is released while waiting.
+2. Make or answer a regular cellular call yourself, using the phone earpiece. Leave speakerphone, Bluetooth, headsets and Samsung live translation off.
+3. After detecting the connected call, the app blocks the original uplink before capture and conversion buffering. Only converted voice is then injected; incoming audio is unchanged. The short interval before connection detection is **not guaranteed to block your original voice**.
+4. Ending the call restores the microphone, clears the previous audio context and returns to waiting. Pressing **Stop** in the app or notification intentionally restores your original voice and keeps the call connected.
+
+**On an error, the call is terminated before the original microphone is restored.** An independent guard handles worker death or missing heartbeats; changing to an unsupported audio route also triggers termination. If termination or call-state verification fails, the app does not intentionally release original-voice blocking and asks you to end the call manually. A system-wide failure or simultaneous loss of both processes has not been validated; this experimental mode is not an absolute voice-privacy guarantee.
+
+Device listening checks confirmed converted-only outgoing speech, normal incoming speech, starting automatically after enabling before a call, and original-voice restoration without disconnecting on explicit Stop. The revised error-termination policy requires its own device test. Android unit tests cover end-before-restore ordering, failed termination, unreadable call state, and distinguishing explicit Stop from EOF/heartbeat timeout.
+
 ## Verified scope and limits
 
-Galaxy S23+ / Android 16 was used for the rootless Shizuku tests. Native Discord and Secure Folder KakaoTalk received converted voice according to user listening checks; switching between them in all-app mode was also checked. Instagram is selectable but not yet verified by listening. Cellular calls, Bluetooth input and other chipsets remain unverified.
+Galaxy S23+ / Android 16 was used for the rootless Shizuku tests. Native Discord and Secure Folder KakaoTalk received converted voice according to user listening checks; switching between them in all-app mode was also checked. Instagram is selectable but not yet verified by listening. Cellular calls use the separate experimental mode above. Bluetooth input and other chipsets remain unverified.
 
 The status-notification test included approximately 146 seconds of Discord input and 40 seconds with the screen off. Audio was confirmed after waking; input pauses released capture and the CPU wake lock, and notification Stop removed the policy/service. It recorded no skipped inputs or AudioTrack underruns, but buffer recovery inserted a total of 220 ms of silence. The approximately 653 ms capture-to-injection estimate excludes app buffering and network latency. This was a short test with USB/ADB attached, not a battery-only endurance test.
 

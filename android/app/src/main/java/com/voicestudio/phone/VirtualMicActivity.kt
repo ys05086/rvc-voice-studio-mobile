@@ -118,13 +118,14 @@ object VirtualMicSession {
             val settings = Rvc.Settings(n("pitch",0.0), n("formant",0.0), n("low_pitch_ratio",1.0), n("low_pitch_knee",120.0),
                 n("high_pitch_ratio",1.0), n("high_pitch_knee",260.0), n("unvoiced_keep",1.0) != 0.0,
                 n("intonation_expand",0.0) != 0.0, n("intonation_ratio",1.15), n("rms_mix_rate",0.0))
-            val saved = LivePreferences.read(virtualMic = true, getInt = prefs::getInt)
+            val profile = ModelLivePreferences(prefs, model.name)
+            val saved = LivePreferences.read(virtualMic = true, getInt = profile::getInt)
             val block = intent.getIntExtra("block",saved.block).also { require(it in 15..50) }
             val inputDb = intent.getFloatExtra("input_gain_db",12f).also { require(it in 0f..36f) }
             val threshold = intent.getFloatExtra("threshold_db",saved.thresholdDb.toFloat()).also { require(it in -120f..-30f) }
             val outputDb = intent.getFloatExtra("gain_db",saved.gainDb.toFloat()).also { require(it in -12f..36f) }
             val params = saved.copy(block = block,
-                context = intent.getIntExtra("context", prefs.getInt("live_context", LiveParams.defaultContext(block, saved.crossfade))), thresholdDb = threshold.toDouble(), gainDb = outputDb.toDouble(),
+                context = intent.getIntExtra("context", profile.getInt("live_context", LiveParams.defaultContext(block, saved.crossfade))), thresholdDb = threshold.toDouble(), gainDb = outputDb.toDouble(),
                 skipQuiet = !intent.getBooleanExtra("no_quiet_skip",false))
             val dec = if (File(model,"model.dec.w8a16.onnx").isFile) "model.dec.w8a16.onnx" else "model.dec.onnx"
             val threads = intent.getIntExtra("threads",1).also { require(it in 1..8) }

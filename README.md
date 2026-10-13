@@ -8,6 +8,8 @@ Unofficial voice conversion for Android phones, based on [RVC](https://github.co
 
 Recording, file conversion, local live monitoring and in-app web calls do **not** require Shizuku.
 
+**New in 0.4.2:** experimental cellular call conversion on Galaxy S23+ (SM-S916N), and realtime settings saved separately for each voice model. [Phone-call setup and supported routes](docs/USAGE.md#experimental-cellular-phone-calls)
+
 ## Screenshots
 
 Captured on a Galaxy S23+ with the English UI. Personal model names and conversion settings are covered with opaque masks, including slider positions. System status bars and website content are omitted. See the [Korean README](README.ko.md) for Korean screenshots.
@@ -36,7 +38,7 @@ The UI now supports **English and Korean**. Use web calls without Shizuku, or co
 - [App setup, web calls and Shizuku instructions](docs/USAGE.md)
 - [PC converter: every step, USB/wireless transfer and troubleshooting](converter/USAGE.md)
 - The virtual mic has no 30-second start deadline or five-minute limit. Its ongoing notification shows status and elapsed time and provides a Stop button. No active destination input means capture/inference pause.
-- Tested routing/listening: Galaxy S23+ / Android 16, native Discord and Secure Folder KakaoTalk. Other hardware, cellular calls, Bluetooth input and Instagram listening remain unverified. Short screen-off testing passed; long battery-only use is not yet validated.
+- Tested routing/listening: Galaxy S23+ / Android 16, native Discord, Secure Folder KakaoTalk and the separate experimental cellular-call mode on SM-S916N using the earpiece. Other hardware, Bluetooth input and Instagram listening remain unverified. Short screen-off testing passed; long battery-only use is not yet validated.
 
 
 ## Web call prototype (end-to-end calls not yet validated)
@@ -62,6 +64,8 @@ On 2026-10-11, a Galaxy S23+ with Android System WebView 154.0.8037.106 displaye
 - **Settings** behind the gear: voice models, where the models run (Recommended / All 32-bit / Custom) and diagnosis logs.
 
 On a Galaxy S23+ (Snapdragon 8 Gen 2), a 15 s recording converts in about 7 s, and realtime runs 0.25 s blocks in about 0.23 s each, with an estimated 0.65 s from mouth to ear.
+
+Realtime output gain, block size, additional context, crossfade, output buffer and silence threshold are saved per voice model. Switching voices restores that model’s settings, shared between Live and the virtual microphone. Existing global settings are preserved as each model’s initial values.
 
 ## How it runs on the phone (measured)
 

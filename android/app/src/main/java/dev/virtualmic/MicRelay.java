@@ -38,6 +38,7 @@ final class MicRelay implements Closeable {
                 AudioFormat.ENCODING_PCM_16BIT);
         if (minimum <= 0) throw new IllegalStateException("No supported microphone buffer size");
         int audioSource = MediaRecorder.AudioSource.MIC;
+        if ("voice-communication".equals(sourceName)) audioSource = MediaRecorder.AudioSource.VOICE_COMMUNICATION;
         if ("remote-submix".equals(sourceName)) {
             if (context.checkSelfPermission("android.permission.CAPTURE_AUDIO_OUTPUT")
                     != PackageManager.PERMISSION_GRANTED) {
@@ -193,6 +194,13 @@ final class MicRelay implements Closeable {
                 throw new IllegalStateException("Physical microphone did not start");
         }
         bridge.run(record, track, seconds, trace, manager, scope);
+    }
+
+    void runCellular(AudioTrack track, AppBridge bridge, AppBridge.CallControl control) throws Exception {
+        record.startRecording();
+        if (record.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING)
+            throw new IllegalStateException("Physical microphone did not start");
+        bridge.run(record, track, 0, null, manager, new InputScope(-1, false, 2000, -1), control);
     }
 
     private static double db(double energy, long samples) {

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="cellular_title">Phone calls · Experimental</string>
+    <string name="cellular_destination">Phone call</string>
+    <string name="cellular_open_phone">Open Phone</string>
+    <string name="cellular_help">Samsung S23+ (SM-S916N) only. Requires Shizuku, without root. Turn on virtual mic first, then make or answer a call using the earpiece. Errors or audio route changes keep the original voice blocked and end the call. Pressing Stop keeps the call connected and restores your original voice. Blocking is not guaranteed during the brief interval before a connection is detected.</string>
+    <string name="cellular_waiting">Waiting for a phone call</string>
+    <string name="cellular_waiting_help">Make or answer a phone call using the earpiece. Conversion starts automatically when connected. The microphone is released while waiting.</string>
+    <string name="cellular_ready">Choose your voice and turn on virtual mic, then make or answer a phone call.</string>
+    <string name="cellular_running">Sending only your converted voice to the phone call. Incoming audio stays unchanged.</string>
+    <string name="cellular_no_call">Connect a regular phone call first, then return here to start conversion.</string>
+    <string name="cellular_route">Use the phone earpiece. Speakerphone, Bluetooth and headsets are not supported. Changing the route during conversion keeps the original voice blocked and ends the call.</string>
+    <string name="cellular_unsupported">This experimental phone-call mode currently supports only the tested Samsung S23+ (SM-S916N) with compatible system audio controls.</string>
+    <string name="cellular_muted">The phone microphone is muted. Unmute it in the Phone app before starting conversion.</string>
+    <string name="cellular_busy">Another call audio feature is using the microphone controls. Turn off live translation and try again.</string>
+    <string name="cellular_stalled">Audio processing or monitoring was interrupted, so call termination was requested. The original microphone is restored only after the call is confirmed to have ended.</string>
+    <string name="cellular_hangup_failed">Call termination or microphone restoration could not be confirmed. Original voice blocking will not be released. End the call manually in the Phone app.</string>
+    <string name="cellular_restore_failed">Automatic microphone restoration could not be confirmed. End this call before trying again.</string>
+</resources>

@@ -16,8 +16,8 @@ android {
         applicationId = "com.voicestudio.phone"
         minSdk = 29
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.4.1"
+        versionCode = 6
+        versionName = "0.4.2"
         ndk { abiFilters += listOf("arm64-v8a") }  // the S23+; keeps the APK small
     }
 

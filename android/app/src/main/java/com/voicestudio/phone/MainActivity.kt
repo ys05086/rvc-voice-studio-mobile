@@ -138,7 +138,7 @@ class MainActivity : Activity() {
         super.onResume()
         if (!busy) refreshModels()
         sharedLiveControls?.refresh()
-        liveGainBar?.progress = prefs.getInt("live_gain_db", 12) + 12
+        liveGainBar?.progress = livePrefs().getInt("live_gain_db", 12) + 12
         if (recorder == null) refreshRecordings()  // realtime recordings may have been saved from the notification
         if (LiveSession.engine != null) { ui.removeCallbacks(liveTicker); ui.post(liveTicker) }  // back from the notification
     }
@@ -879,7 +879,7 @@ class MainActivity : Activity() {
 
     private fun liveDevices(dir: File): Devices {
         val selected = fileDevices(dir)
-        return if (prefs.getBoolean("live_split", false) && computePolicy.tryNpu && selected.front == "qnn_htp")
+        return if (ModelLivePreferences(prefs, dir.name).getBoolean("live_split", false) && computePolicy.tryNpu && selected.front == "qnn_htp")
             Devices(selected.front, "split", "model.dec.onnx", str(R.string.ui_front_end_npu_decoder_npu_cpu))
         else selected
     }
@@ -1009,8 +1009,11 @@ class MainActivity : Activity() {
         }
     }
 
-    /** Realtime settings, phone-wide; block, crossfade, cushion and threshold apply at the next start. */
-    private fun liveParams() = LivePreferences.read(getInt = prefs::getInt)
+    /** Timing is saved per model and applies at the next start. */
+    private fun livePrefs() = ModelLivePreferences(prefs, currentModel()?.name)
+    private fun liveParams() = LivePreferences.read(getInt = livePrefs()::getInt)
+    private var liveSplitSwitch: Switch? = null
+    private var refreshingLiveProfile = false
     private var sharedLiveControls: LiveSettingsUi? = null
     private var liveGainBar: SeekBar? = null
 
@@ -1033,8 +1036,14 @@ class MainActivity : Activity() {
             addView(TextView(this@MainActivity).apply { text = hint; textSize = 11f; setTextColor(getColor(R.color.muted)) })
         })
         row.addView(Switch(this).apply {
-            isChecked = prefs.getBoolean(key, false)
-            setOnCheckedChangeListener { _, on -> prefs.edit().putBoolean(key, on).apply(); showLive() }
+            isChecked = if (key == "live_split") livePrefs().getBoolean(key, false) else prefs.getBoolean(key, false)
+            if (key == "live_split") liveSplitSwitch = this
+            setOnCheckedChangeListener { _, on ->
+                if (!refreshingLiveProfile) {
+                    if (key == "live_split") livePrefs().putBoolean(key, on) else prefs.edit().putBoolean(key, on).apply()
+                    showLive()
+                }
+            }
         })
         parent.addView(row)
     }
@@ -1080,7 +1089,7 @@ class MainActivity : Activity() {
                 }
             }
         })
-        // the voice: output level (phone-wide), pitch and texture (the voice's own settings, shared with 변환)
+        // Output level, pitch and texture belong to the selected voice.
         val voice = card(page)
         voice.addView(TextView(this).apply { text = str(R.string.ui_voice_changes_apply_instantly); textSize = 13f; setTypeface(typeface, Typeface.BOLD) })
         val gainValue = valueText()
@@ -1088,10 +1097,10 @@ class MainActivity : Activity() {
         gain.setOnSeekBarChangeListener(slider { p, done ->
             gainValue.text = String.format(Locale.US, "%+d dB", p - 12)
             LiveSession.engine?.setGain((p - 12).toDouble())
-            if (done) prefs.edit().putInt("live_gain_db", p - 12).apply()
+            if (done) livePrefs().putInt("live_gain_db", p - 12)
         })
         liveGainBar = gain
-        gain.progress = prefs.getInt("live_gain_db", 12) + 12
+        gain.progress = livePrefs().getInt("live_gain_db", 12) + 12
         val pitchValue = valueText()
         val pitch = sliderRow(voice, str(R.string.ui_pitch_relative_to_your_voice), pitchValue, "−24", "+24", 48)
         pitch.setOnSeekBarChangeListener(slider { p, done ->
@@ -1118,7 +1127,10 @@ class MainActivity : Activity() {
         header.setOnClickListener { setOpen(body.visibility != View.VISIBLE) }
         more.addView(header)
         more.addView(body)
-        sharedLiveControls = LiveSettingsUi(this, prefs, changed = { showLive() }).also { it.timing(body) }
+        body.addView(TextView(this).apply {
+            text = str(R.string.ui_live_per_voice_help); textSize = 11f; setTextColor(getColor(R.color.muted))
+        })
+        sharedLiveControls = LiveSettingsUi(this, ::livePrefs, changed = { showLive() }).also { it.timing(body) }
         switchRow(body, str(R.string.ui_split_decoder_npu_bit_cpu), str(R.string.ui_can_sound_smoother_but_is_slower_needs), "live_split")
         switchRow(body, str(R.string.ui_play_through_speaker), str(R.string.ui_converted_audio_may_feed_back_into_the), "live_speaker")
         switchRow(body, str(R.string.ui_bypass_conversion_diagnostics), str(R.string.ui_play_the_original_mic_audio_without_the), "live_bypass")
@@ -1140,6 +1152,11 @@ class MainActivity : Activity() {
     /** The live page's pitch and texture from the selected voice's settings.json. */
     private fun loadLiveSliders() {
         val dir = currentModel() ?: return
+        sharedLiveControls?.refresh()
+        liveGainBar?.progress = livePrefs().getInt("live_gain_db", 12) + 12
+        refreshingLiveProfile = true
+        liveSplitSwitch?.isChecked = livePrefs().getBoolean("live_split", false)
+        refreshingLiveProfile = false
         val j = settingsJson(dir)
         fun num(k: String) = if (j.has(k)) j.optDouble(k, 0.0) else 0.0
         liveBars["pitch"]?.progress = (num("pitch") + 24).roundToInt()

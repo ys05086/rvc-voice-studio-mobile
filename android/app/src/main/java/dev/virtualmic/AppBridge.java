@@ -110,8 +110,37 @@ final class AppBridge implements Closeable {
         return n;
     }
 
+    void idleHeartbeat() throws IOException {
+        if (failure != null) throw failure;
+        if (closed) throw new IOException("Bridge closed");
+        output.writeInt(0); output.flush();
+    }
+
+    void resetCallContext() throws IOException {
+        synchronized (this) { resetPending = true; head = 0; queued = 0; }
+        output.writeInt(-1); output.flush();
+        long deadline = System.nanoTime() + 5_000_000_000L;
+        while (resetPending) {
+            idleHeartbeat();
+            if (System.nanoTime() >= deadline) throw new IOException("CELLULAR_STALLED");
+            try { Thread.sleep(50); } catch (InterruptedException e) { throw new IOException(e); }
+        }
+    }
+
     void run(AudioRecord record, AudioTrack track, int seconds, MicRelay.Trace raw,
              AudioManager manager, InputScope scope) throws Exception {
+        run(record, track, seconds, raw, manager, scope, null);
+    }
+
+    interface CallControl {
+        boolean tick() throws Exception;
+        void convertedReady() throws Exception;
+        void failed();
+        void close();
+    }
+
+    void run(AudioRecord record, AudioTrack track, int seconds, MicRelay.Trace raw,
+             AudioManager manager, InputScope scope, CallControl call) throws Exception {
         Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO);
         ScheduledExecutorService watchdog = Executors.newSingleThreadScheduledExecutor();
         if (seconds > 0) watchdog.schedule(this::close, seconds + 5, TimeUnit.SECONDS);
@@ -120,7 +149,7 @@ final class AppBridge implements Closeable {
         BridgeTiming.Window captureToWrite = new BridgeTiming.Window(4096);
         AudioTimestamp timestamp = new AudioTimestamp();
         byte[] bytes = new byte[960];
-        long captured = 0, written = 0, gaps = 0, lastReport = 0;
+        long captured = call == null ? 0 : suppliedFrames, written = 0, gaps = 0, lastReport = 0;
         double energy = 0;
         PlayoutGate gate = new PlayoutGate(startDelayMs, 4800);
         long recoverySilence = 0;
@@ -129,14 +158,24 @@ final class AppBridge implements Closeable {
         int pending = 0, offset = 0, missingTarget = 0;
         Method getUid = AudioRecordingConfiguration.class.getMethod("getClientUid");
         long start = System.nanoTime(), end = BridgeTiming.deadline(start, seconds);
-        boolean persistent = seconds == 0, capturing = !persistent, targetActive = !persistent;
-        long nextCheck = 0, lastHeartbeat = 0, segmentStart = start, segmentWritten = 0, segmentCaptured = 0;
+        boolean persistent = seconds == 0 && call == null, capturing = !persistent, targetActive = !persistent;
+        long lastConverted = start, lastWritten = start, previousReceived = received;
+        long nextCheck = 0, lastHeartbeat = 0, segmentStart = start, segmentWritten = 0, segmentCaptured = captured;
         if (capturing) { track.play(); log("BRIDGE_BUFFERING: waiting for converted audio"); }
         else log("BRIDGE_IDLE: waiting for an app microphone; no start deadline");
         try {
             while (!closed && System.nanoTime() < end) {
                 if (failure != null) throw failure;
+                if (call != null && !call.tick()) break;
                 long stateNow = System.nanoTime();
+                if (call != null) {
+                    synchronized (this) {
+                        if (received != previousReceived) { previousReceived = received; lastConverted = stateNow; }
+                    }
+                    long grace = gate.hasPlayed() ? CallLease.TIMEOUT_NS : 20_000_000_000L;
+                    if (stateNow - lastConverted > grace || stateNow - lastWritten > grace)
+                        throw new IOException("CELLULAR_STALLED");
+                }
                 if (persistent && stateNow >= nextCheck) {
                     targetActive = false;
                     for (AudioRecordingConfiguration cfg : manager.getActiveRecordingConfigurations()) {
@@ -210,6 +249,10 @@ final class AppBridge implements Closeable {
                 if (pending > offset) {
                     int accepted = track.write(out, offset, pending - offset, AudioTrack.WRITE_NON_BLOCKING);
                     if (accepted < 0) throw new IOException("Injection write " + accepted);
+                    if (accepted > 0) {
+                        lastWritten = now;
+                        if (call != null && sourcePositions[offset + accepted - 1] >= 0) call.convertedReady();
+                    }
                     if (accepted > 0 && converted != null) converted.write(Arrays.copyOfRange(out, offset, offset + accepted), accepted);
                     if (accepted > 0 && sourcePositions[offset+accepted-1] >= 0
                             && record.getTimestamp(timestamp,AudioTimestamp.TIMEBASE_MONOTONIC)==AudioRecord.SUCCESS) {
@@ -220,7 +263,7 @@ final class AppBridge implements Closeable {
                     offset += accepted; written += accepted;
                 }
                 if (now - lastReport >= 1_000_000_000L) {
-                    boolean active = false;
+                    boolean active = call != null;
                     String silenced = "not-active";
                     for (AudioRecordingConfiguration cfg : manager.getActiveRecordingConfigurations()) {
                         if (scope.matches((Integer) getUid.invoke(cfg))) { active = true; silenced = "" + cfg.isClientSilenced(); }
@@ -248,8 +291,11 @@ final class AppBridge implements Closeable {
             if(captureToWrite.size()>0) log("CAPTURE_TO_INJECT_WRITE p50_ms="+captureToWrite.percentile(.50)
                     +" p95_ms="+captureToWrite.percentile(.95)
                     +" window=last_4096_samples scope=source_timestamps_and_SOLA_mapping_excludes_output_track_and_target_buffers");
-            if (received == 0) throw new IOException("No converted PCM received");
-        } finally { close(); watchdog.shutdownNow(); }
+            if (received == 0 && call == null) throw new IOException("No converted PCM received");
+        } catch (Exception e) {
+            if (call != null) call.failed();
+            throw e;
+        } finally { if (call != null) call.close(); else close(); watchdog.shutdownNow(); }
     }
 
     @Override public synchronized void close() {

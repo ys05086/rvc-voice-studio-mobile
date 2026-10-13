@@ -380,7 +380,8 @@
     <string name="ui_additional_context">Additional context</string>
     <string name="ui_additional_context_help">Past audio analyzed with each block (0–3 s). More context may improve consistency but requires more processing. Shared by Live and virtual mic; applies next time you start.</string>
     <string name="ui_voice_live_settings">Voice and live settings</string>
-    <string name="ui_virtual_settings_help">Voice settings are saved for the selected model. Output gain and timing settings are shared with Live. Changes apply the next time the virtual mic starts. Apply and restart briefly interrupts microphone forwarding.</string>
+    <string name="ui_virtual_settings_help">Pitch, formant, output gain and timing settings are saved for the selected model and shared with Live. Changes apply the next time the virtual mic starts. Apply and restart briefly interrupts microphone forwarding.</string>
     <string name="ui_apply_restart">Apply and restart</string>
     <string name="ui_restart_after_stopping">Wait for the microphone to stop, then start it again.</string>
+    <string name="ui_live_per_voice_help">Output gain and timing settings are saved separately for each voice and shared with its virtual mic settings.</string>
 </resources>

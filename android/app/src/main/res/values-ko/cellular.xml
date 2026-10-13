@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="cellular_title">일반 통화 · 실험 기능</string>
+    <string name="cellular_destination">일반 통화</string>
+    <string name="cellular_open_phone">전화 앱 열기</string>
+    <string name="cellular_help">삼성 S23+ (SM-S916N) 전용입니다. 루팅 없이 Shizuku가 필요합니다. 가상 마이크를 먼저 켜고 수화기로 전화를 걸거나 받으세요. 오류나 오디오 경로 변경 시 원음 차단을 유지하며 통화를 종료합니다. 직접 끄면 통화가 유지되고 원래 목소리가 전달됩니다. 연결 감지 전의 짧은 구간까지 원음 차단을 보장하지는 않습니다.</string>
+    <string name="cellular_waiting">전화 연결을 기다리고 있어요</string>
+    <string name="cellular_waiting_help">수화기로 일반 전화를 걸거나 받으세요. 연결되면 자동으로 변환합니다. 대기 중에는 마이크를 사용하지 않습니다.</string>
+    <string name="cellular_ready">목소리를 고르고 가상 마이크를 켠 뒤, 일반 전화를 걸거나 받으세요.</string>
+    <string name="cellular_running">통화 상대에게 변환된 목소리만 전달하고 있어요. 상대 목소리는 그대로 들립니다.</string>
+    <string name="cellular_no_call">일반 전화를 먼저 연결한 뒤 여기로 돌아와 변환을 켜 주세요.</string>
+    <string name="cellular_route">휴대전화 수화기를 사용해 주세요. 스피커폰·블루투스·헤드셋은 지원하지 않습니다. 변환 중 경로가 바뀌면 원음 차단을 유지하며 통화를 종료합니다.</string>
+    <string name="cellular_unsupported">현재 이 일반 통화 실험 기능은 시스템 오디오 제어 기능이 호환되는 삼성 S23+ (SM-S916N)만 지원합니다.</string>
+    <string name="cellular_muted">전화 마이크가 음소거되어 있어요. 전화 앱에서 음소거를 해제한 뒤 변환을 켜 주세요.</string>
+    <string name="cellular_busy">다른 통화 오디오 기능이 마이크를 제어하고 있어요. 실시간 통역을 끄고 다시 시도해 주세요.</string>
+    <string name="cellular_stalled">오디오 처리나 감시가 끊겨 통화 종료를 요청했어요. 종료를 확인한 뒤에만 원래 마이크를 복구합니다.</string>
+    <string name="cellular_hangup_failed">통화 종료 또는 마이크 복구를 확인하지 못했어요. 원음 차단을 해제하지 않습니다. 전화 앱에서 통화를 직접 종료해 주세요.</string>
+    <string name="cellular_restore_failed">마이크 자동 복구를 확인하지 못했어요. 현재 통화를 종료한 뒤 다시 시도해 주세요.</string>
+</resources>

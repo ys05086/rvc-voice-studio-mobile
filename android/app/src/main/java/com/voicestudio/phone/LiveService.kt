@@ -73,7 +73,7 @@ class LiveService : Service() {
         } else if (wakeLock.isHeld) wakeLock.release()
 
         val title = if (!virtual) str(R.string.ui_live_conversion_running) else when (phase) {
-            MicPhase.WAITING -> str(R.string.ui_virtual_mic_waiting_for_input)
+            MicPhase.WAITING -> if (ShizukuMicController.cellular) str(R.string.cellular_waiting) else str(R.string.ui_virtual_mic_waiting_for_input)
             MicPhase.RUNNING -> str(R.string.ui_virtual_mic_converting)
             MicPhase.BUFFERING -> str(R.string.ui_virtual_mic_buffering)
             MicPhase.STOPPING -> str(R.string.ui_virtual_mic_stopping)
@@ -85,10 +85,10 @@ class LiveService : Service() {
             targetLabel = runCatching { packageManager.getApplicationLabel(packageManager.getApplicationInfo(targetPackage, 0)).toString() }
                 .getOrDefault(str(R.string.ui_selected_app))
         }
-        val destination = if (ShizukuMicController.allApps) str(R.string.ui_all_apps) else targetLabel +
+        val destination = if (ShizukuMicController.cellular) str(R.string.cellular_destination) else if (ShizukuMicController.allApps) str(R.string.ui_all_apps) else targetLabel +
             if (ShizukuMicController.otherProfile) str(R.string.ui_other_profile) else ""
         val body = if (!virtual) str(R.string.ui_converting_and_playing_your_microphone_audio) else when (phase) {
-            MicPhase.WAITING -> str(R.string.ui_connects_automatically_when_an_app_uses_the)
+            MicPhase.WAITING -> if (ShizukuMicController.cellular) str(R.string.cellular_waiting_help) else str(R.string.ui_connects_automatically_when_an_app_uses_the)
             MicPhase.BUFFERING -> str(R.string.ui_audio_will_resume_when_converted_sound_is)
             MicPhase.RUNNING -> str(R.string.ui_sending_converted_voice, destination)
             MicPhase.STOPPING -> str(R.string.ui_restoring_the_original_microphone)

@@ -41,6 +41,8 @@ class ShizukuMicActivity : Activity() {
     private var selectedModel = ""
     private var otherProfile = false
     private var allApps = false
+    private var cellular = false
+    private lateinit var cellularSwitch: Switch
     private lateinit var allAppsSwitch: Switch
     private var localError: String? = null
     private lateinit var connection: TextView
@@ -103,6 +105,7 @@ class ShizukuMicActivity : Activity() {
         selectedPackage = if (ShizukuMicController.active) ShizukuMicController.targetPackage else prefs.getString("virtual_mic_target", "com.discord")!!
         otherProfile = if (ShizukuMicController.active) ShizukuMicController.otherProfile else prefs.getBoolean("virtual_mic_other_profile", false)
         allApps = if (ShizukuMicController.active) ShizukuMicController.allApps else prefs.getBoolean("virtual_mic_all_apps", false)
+        cellular = if (ShizukuMicController.active) ShizukuMicController.cellular else prefs.getBoolean("virtual_mic_cellular", false)
         models = File(getExternalFilesDir(null), "models").listFiles()?.filter { it.isDirectory && File(it, "model.enc.onnx").isFile }?.map { it.name }?.sorted() ?: emptyList()
         selectedModel = if (ShizukuMicController.active) ShizukuMicController.modelName else prefs.getString("virtual_mic_model", prefs.getString("model", null)) ?: ""
         if (selectedModel !in models) selectedModel = models.firstOrNull() ?: ""
@@ -167,6 +170,15 @@ class ShizukuMicActivity : Activity() {
         }
         level(str(R.string.ui_mic_input)).let { inputBar = it.first; inputValue = it.second }
         level(str(R.string.ui_converted_output)).let { outputBar = it.first; outputValue = it.second }
+        val callCard = card(content)
+        cellularSwitch = Switch(this).apply {
+            text = str(R.string.cellular_title); textSize = 15f; setTextColor(ink); isChecked = cellular
+            setOnCheckedChangeListener { _, checked ->
+                cellular = checked; localError = null; saveSelection(); updateSelection()
+            }
+        }
+        callCard.addView(cellularSwitch)
+        callCard.addView(text(str(R.string.cellular_help), 12f, muted))
         targetCard = card(content)
         allAppsSwitch = Switch(this).apply {
             text = str(R.string.ui_replace_input_for_all_apps); textSize = 15f; setTextColor(ink); isChecked = allApps
@@ -221,7 +233,8 @@ class ShizukuMicActivity : Activity() {
         }
         footer.addView(primary, LinearLayout.LayoutParams(-1, dp(52))); footer.space(8)
         openTarget = button(str(R.string.ui_open_selected_app)) {
-            if (allApps) startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME))
+            if (cellular) startActivity(Intent(Intent.ACTION_DIAL))
+            else if (allApps) startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME))
             else if (otherProfile) showError(str(R.string.ui_open_secure_folder_yourself_then_open_the)) else launch(selectedPackage)
         }
         footer.addView(openTarget, LinearLayout.LayoutParams(-1, dp(44))); footer.space(8)
@@ -237,8 +250,10 @@ class ShizukuMicActivity : Activity() {
         prefs.edit().putString("virtual_mic_target", selectedPackage).putString("virtual_mic_model", selectedModel)
             .putBoolean("virtual_mic_other_profile", otherProfile).apply()
         prefs.edit().putBoolean("virtual_mic_all_apps", allApps).apply()
+        prefs.edit().putBoolean("virtual_mic_cellular", cellular).apply()
     }
     private fun updateSelection() {
+        targetCard.visibility = if (cellular) View.GONE else View.VISIBLE
         val app = targets.firstOrNull { it.packageName == selectedPackage }
         targetName.text = if (allApps) str(R.string.ui_all_apps) else app?.label ?: runCatching { packageManager.getApplicationLabel(packageManager.getApplicationInfo(selectedPackage, 0)).toString() }.getOrDefault(selectedPackage)
         targetIcon.setImageDrawable(runCatching { packageManager.getApplicationIcon(if (allApps) packageName else selectedPackage) }.getOrNull())
@@ -251,6 +266,7 @@ class ShizukuMicActivity : Activity() {
             else if (otherProfile) str(R.string.ui_start_a_call_or_recording_in_that)
             else str(R.string.ui_connect_to_an_app_installed_in_the)
         openTarget.text = if (allApps) str(R.string.ui_go_to_home_screen) else if (otherProfile) str(R.string.ui_open_app_in_secure_folder_yourself) else str(R.string.ui_open, targetName.text)
+        if (cellular) openTarget.text = str(R.string.cellular_open_phone)
     }
     private fun chooseTarget() {
         if (ShizukuMicController.active || allApps) return
@@ -311,7 +327,7 @@ class ShizukuMicActivity : Activity() {
         val file = File(model, "settings.json")
         val body = column().apply { setPadding(dp(20), dp(8), dp(20), dp(16)) }
         body.addView(text(str(R.string.ui_virtual_settings_help), 12f, muted))
-        val controls = LiveSettingsUi(this, prefs, virtualMic = true)
+        val controls = LiveSettingsUi(this, { ModelLivePreferences(prefs, model.name) }, virtualMic = true)
         fun readVoice(): JSONObject = if (file.isFile) JSONObject(file.readText()) else JSONObject()
         fun voice(key: String, label: Int, min: Int, max: Int, scale: Double) {
             controls.slider(body, str(label), min, max, if (scale == 1.0) min.toString() else (min / scale).toString(),
@@ -379,7 +395,7 @@ class ShizukuMicActivity : Activity() {
             phase == MicPhase.STOPPING -> str(R.string.ui_stopping_the_microphone)
             phase == MicPhase.BUFFERING -> str(R.string.ui_preparing_audio)
             stream -> str(R.string.ui_sending_your_voice)
-            ready -> str(R.string.ui_waiting_for_microphone_input)
+            ready -> if (cellular) str(R.string.cellular_waiting) else str(R.string.ui_waiting_for_microphone_input)
             active -> str(R.string.ui_preparing_your_voice)
             !allowed -> str(R.string.ui_connect_to_shizuku_first)
             else -> str(R.string.ui_ready_to_start)
@@ -388,12 +404,12 @@ class ShizukuMicActivity : Activity() {
             failure != null -> failure.substringAfter("Microphone bridge did not start: ").takeLast(350)
             phase == MicPhase.STOPPING -> str(R.string.ui_restoring_the_original_microphone_2)
             phase == MicPhase.BUFFERING -> str(R.string.ui_audio_resumes_when_converted_sound_is_ready)
-            stream -> if (allApps) str(R.string.ui_sending_converted_input_to_apps_using_the) else str(R.string.ui_sending_converted_input_to, targetName.text, if (otherProfile) str(R.string.ui_other_profile) else "")
-            ready -> str(R.string.ui_waiting_without_a_time_limit_start_a)
+            stream -> if (cellular) str(R.string.cellular_running) else if (allApps) str(R.string.ui_sending_converted_input_to_apps_using_the) else str(R.string.ui_sending_converted_input_to, targetName.text, if (otherProfile) str(R.string.ui_other_profile) else "")
+            ready -> if (cellular) str(R.string.cellular_waiting_help) else str(R.string.ui_waiting_without_a_time_limit_start_a)
             active -> str(R.string.ui_loading_the_selected_voice_please_wait)
             !alive -> str(R.string.ui_tap_the_connection_button_above_and_start)
             !allowed -> str(R.string.ui_the_start_button_will_request_shizuku_access)
-            else -> str(R.string.ui_choose_an_app_and_voice_then_turn)
+            else -> if (cellular) str(R.string.cellular_ready) else str(R.string.ui_choose_an_app_and_voice_then_turn)
         }
         val seconds = if (active) (SystemClock.elapsedRealtime() - ShizukuMicController.startedAt) / 1000 else 0L
         timer.text = if (active) String.format(Locale.US, "%02d:%02d", seconds / 60, seconds % 60) else ""
@@ -402,6 +418,7 @@ class ShizukuMicActivity : Activity() {
         primary.alpha = if (primary.isEnabled) 1f else .45f
         profile.isEnabled = !active; targetCard.alpha = if (active) .75f else 1f; voiceCard.alpha = 1f
         allAppsSwitch.isEnabled = !active
+        cellularSwitch.isEnabled = !active
         val meter = if (stream) VirtualMicSession.meter else VirtualMicSession.Meter()
         fun showLevel(value: Float, bar: ProgressBar, label: TextView) {
             val db = if (value > 0) (20 * log10(value.toDouble())).coerceIn(-60.0, 0.0) else -60.0
@@ -434,7 +451,8 @@ class ShizukuMicActivity : Activity() {
         try {
             check(!LiveSession.running) { str(R.string.ui_stop_the_existing_live_conversion_first) }
             startForegroundService(Intent(this, LiveService::class.java).putExtra("virtual_mic", true))
-            ShizukuMicController.start(applicationContext, selectedPackage, selectedModel, otherProfile, allApps)
+            ShizukuMicController.start(applicationContext, selectedPackage, selectedModel,
+                !cellular && otherProfile, !cellular && allApps, cellular)
         } catch (e: Throwable) {
             showError(e.message ?: str(R.string.ui_could_not_start_2)); stopService(Intent(this, LiveService::class.java))
         }

@@ -8,7 +8,8 @@ FORMAT = re.compile(r"%(?:(\d+)\$)?[-+0 #]*\d*(?:\.\d+)?([sdf])")
 
 
 def strings(folder):
-    entries = ET.parse(ROOT / "res" / folder / "strings.xml").getroot().findall("string")
+    entries = [entry for path in sorted((ROOT / "res" / folder).glob("*.xml"))
+               for entry in ET.parse(path).getroot().findall("string")]
     result = {e.attrib["name"]: "".join(e.itertext()) for e in entries}
     assert len(entries) == len(result), f"Duplicate keys in {folder}"
     assert all(result.values()), f"Empty translation in {folder}"

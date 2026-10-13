@@ -24,12 +24,13 @@ class VirtualMicUserService(private val context: Context) : IVirtualMicService.S
         check(Binder.getCallingUid() == appUid) { "Only Voice Studio may control this service" }
     }
 
-    override fun startMic(targetPackage: String, seconds: Int, otherProfile: Boolean, allApps: Boolean, owner: IBinder): String {
+    override fun startMic(targetPackage: String, seconds: Int, otherProfile: Boolean, allApps: Boolean, cellular: Boolean, owner: IBinder): String {
         checkCaller()
         check(Process.myUid() == 2000) { "Start Shizuku with wireless debugging (shell UID 2000)" }
         require(targetPackage.matches(Regex("[A-Za-z0-9_]+(\\.[A-Za-z0-9_]+)+")))
         require(targetPackage != context.packageName && (seconds == 0 || seconds in 5..300))
         require(!allApps || (!otherProfile && seconds == 0))
+        require(!cellular || (!allApps && !otherProfile && seconds == 0))
         synchronized(this) {
             check(child?.isAlive != true) { "Microphone session already running" }
             port = 0
@@ -37,7 +38,8 @@ class VirtualMicUserService(private val context: Context) : IVirtualMicService.S
             token = "virtual-mic-${UUID.randomUUID()}"
             this.owner = owner
             owner.linkToDeath(died, 0)
-            val command = mutableListOf("/system/bin/app_process", "/", "dev.virtualmic.Main",
+            val command = if (cellular) mutableListOf("/system/bin/app_process", "/", "dev.virtualmic.CellularMain", token)
+                else mutableListOf("/system/bin/app_process", "/", "dev.virtualmic.Main",
                 "--package", targetPackage, "--mic", "--seconds", seconds.toString(), "--bridge", token,
                 "--watch-parent")
             if (otherProfile) command += "--other-profile"
@@ -76,17 +78,19 @@ class VirtualMicUserService(private val context: Context) : IVirtualMicService.S
     override fun snapshot(): String {
         checkCaller()
         return JSONObject().put("uid", Process.myUid()).put("running", child?.isAlive == true)
+            .put("exitCode", child?.let { runCatching { it.exitValue() }.getOrNull() })
             .put("port", port).put("token", token)
             .put("log", synchronized(lines) { lines.joinToString("\n") }).toString()
     }
 
-    override fun stopMic() { checkCaller(); stopChild() }
+    override fun stopMic(explicitStop: Boolean) { checkCaller(); stopChild(explicitStop) }
 
-    @Synchronized private fun stopChild() {
+    @Synchronized private fun stopChild(explicitStop: Boolean = false) {
         val process = child
-        // EOF on the private pipe asks Main to exit and run its policy cleanup hook.
+        // EOF means failure. Only an explicit user action may restore voice during a call.
+        if (explicitStop) runCatching { process?.outputStream?.write(2); process?.outputStream?.flush() }
         runCatching { process?.outputStream?.close() }
-        if (process != null && !process.waitFor(2, TimeUnit.SECONDS)) {
+        if (process != null && !process.waitFor(4, TimeUnit.SECONDS)) {
             process.destroy()
             if (!process.waitFor(1, TimeUnit.SECONDS)) process.destroyForcibly()
         }

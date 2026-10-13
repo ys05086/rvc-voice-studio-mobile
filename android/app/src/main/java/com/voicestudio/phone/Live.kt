@@ -9,7 +9,7 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 import kotlin.math.tanh
 
-/** Realtime settings, phone-wide. Frames are 10 ms. The iPhone's working values: block 18-20, context 100-131,
+/** Realtime settings, read from the selected model profile. Frames are 10 ms. The iPhone's working values: block 18-20, context 100-131,
  *  crossfade 8, cushion 0.06-0.08 s. */
 object LivePreferences {
     /** Shared defaults use the virtual microphone's tested 270 ms blocks. Saved values are preserved. */

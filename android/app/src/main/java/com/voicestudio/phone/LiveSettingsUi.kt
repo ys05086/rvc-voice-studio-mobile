@@ -1,7 +1,6 @@
 package com.voicestudio.phone
 
 import android.content.Context
-import android.content.SharedPreferences
 import android.graphics.Typeface
 import android.view.Gravity
 import android.widget.LinearLayout
@@ -10,7 +9,7 @@ import android.widget.TextView
 import java.util.Locale
 
 /** Shared controls for the Live page and the virtual microphone's settings dialog. */
-class LiveSettingsUi(private val context: Context, private val prefs: SharedPreferences,
+class LiveSettingsUi(private val context: Context, private val prefs: () -> ModelLivePreferences,
                      private val virtualMic: Boolean = false, private val changed: () -> Unit = {}) {
     private val refreshers = ArrayList<() -> Unit>()
     private fun dp(n: Int) = (n * context.resources.displayMetrics.density).toInt()
@@ -53,12 +52,12 @@ class LiveSettingsUi(private val context: Context, private val prefs: SharedPref
         refreshers.add(refresh); refresh()
     }
 
-    private fun params() = LivePreferences.read(virtualMic, prefs::getInt)
+    private fun params() = LivePreferences.read(virtualMic, prefs()::getInt)
 
     fun timing(parent: LinearLayout) {
         fun setting(key: String, label: Int, min: Int, max: Int, low: String, high: String,
                     read: () -> Int, format: (Int) -> String) = slider(parent, str(label), min, max, low, high,
-            read, { prefs.edit().putInt(key, it).apply(); refresh() }, format)
+            read, { prefs().putInt(key, it); refresh() }, format)
         val seconds = { n: Int -> String.format(Locale.US, str(R.string.ui_s), n / 100.0) }
         setting("live_block", R.string.ui_block_audio_converted_per_step, 15, 50,
             str(R.string.ui_faster), str(R.string.ui_more_headroom), { params().block }, seconds)
@@ -69,12 +68,12 @@ class LiveSettingsUi(private val context: Context, private val prefs: SharedPref
         })
         setting("live_crossfade", R.string.ui_crossfade, 4, 12, "0.04", "0.12", { params().crossfade }, seconds)
         setting("live_cushion_cs", R.string.ui_output_buffer_reduce_dropouts, 2, 20, "0.02", "0.20",
-            { prefs.getInt("live_cushion_cs", 6) }, seconds)
+            { prefs().getInt("live_cushion_cs", 6) }, seconds)
         setting("live_threshold_db", R.string.ui_silence_threshold, -80, -30, "−80 dB", "−30 dB",
             { params().thresholdDb.toInt() }, { "$it dB" })
     }
 
     fun outputGain(parent: LinearLayout) = slider(parent, str(R.string.ui_output_gain), -12, 24, "−12 dB", "+24 dB",
-        { params().gainDb.toInt() }, { prefs.edit().putInt("live_gain_db", it).apply() },
+        { params().gainDb.toInt() }, { prefs().putInt("live_gain_db", it) },
         { String.format(Locale.US, "%+d dB", it) })
 }

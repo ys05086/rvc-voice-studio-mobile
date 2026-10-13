@@ -380,7 +380,8 @@
     <string name="ui_additional_context">추가 문맥</string>
     <string name="ui_additional_context_help">매 블록과 함께 분석할 이전 음성 길이예요(0~3초). 늘리면 변환이 더 안정적일 수 있지만 연산량도 늘어요. 실시간·가상 마이크에 공통으로 저장되며 다음 시작부터 적용돼요.</string>
     <string name="ui_voice_live_settings">목소리 · 실시간 설정</string>
-    <string name="ui_virtual_settings_help">음높이와 포먼트는 선택한 모델에 저장해요. 출력 크기와 실시간 설정은 실시간 탭과 공유해요. 가상 마이크는 다음 시작부터 적용돼요. 적용하고 다시 시작하면 입력 전달이 잠시 중단돼요.</string>
+    <string name="ui_virtual_settings_help">음높이·포먼트·출력 크기와 실시간 설정은 선택한 모델별로 저장하고 실시간 탭과 공유해요. 가상 마이크는 다음 시작부터 적용돼요. 적용하고 다시 시작하면 입력 전달이 잠시 중단돼요.</string>
     <string name="ui_apply_restart">적용하고 다시 시작</string>
     <string name="ui_restart_after_stopping">마이크가 완전히 꺼진 뒤 다시 켜주세요.</string>
+    <string name="ui_live_per_voice_help">출력 크기와 실시간 설정은 목소리별로 저장되며, 같은 목소리의 가상 마이크 설정과 공유해요.</string>
 </resources>
